@@ -136,6 +136,20 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val bundledFile = File(filesDir, "jetski-bundle.zip")
+        if (!bundledFile.exists() || bundledFile.length() == 0L) {
+            try {
+                assets.open("jetski-bundle.zip").use { input ->
+                    bundledFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                Log.i(TAG, "Extracted bundled Jetski assets from APK to ${bundledFile.path} (${bundledFile.length()} bytes)")
+            } catch (e: Exception) {
+                Log.w(TAG, "Bundled jetski-bundle.zip not present in assets or extraction failed: ${e.message}")
+            }
+        }
+
         val candidateFiles = buildList {
             getExternalFilesDir(null)?.let { extDir ->
                 add(File(extDir, "jetski-bundle.zip"))
@@ -147,10 +161,13 @@ class MainActivity : ComponentActivity() {
         }
 
         val modeManager = JetskiFrontendModeManager(
-            bundleStorageFile = File(filesDir, "jetski-bundle.zip"),
+            bundleStorageFile = bundledFile,
             candidateDiscoveryFiles = candidateFiles
         ).also {
             it.initializeFromStorage()
+            if (it.currentBundle() != null) {
+                it.switchToMode(dev.agentic.core.network.jetski.FrontendUiMode.IMPORTED_JETSKI_WEB)
+            }
         }
 
         val requestInterceptor = JetskiWebViewRequestInterceptor(
