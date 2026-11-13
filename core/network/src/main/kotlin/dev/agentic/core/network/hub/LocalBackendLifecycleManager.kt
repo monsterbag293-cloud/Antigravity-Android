@@ -130,40 +130,70 @@ class LocalBackendLifecycleManager(
             activePort = actualPort
             val csrfToken = "ag_sandboxed_" + UUID.randomUUID().toString().replace("-", "").take(24)
 
-            // Setup isolated gemini directory inside rootfs
+            // Setup isolated gemini directory inside rootfs with full permissions
             val appDataSubdir = "antigravity"
             val isolatedGeminiDir = File(rootfsDir, "tmp/gemini_app").apply {
                 mkdirs()
-                File(this, "workspaces").mkdirs()
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
+                File(this, "workspaces").apply {
+                    mkdirs()
+                    setReadable(true, false)
+                    setWritable(true, false)
+                    setExecutable(true, false)
+                }
+            }
+            // Ensure /tmp inside rootfs is fully accessible for child bash/python commands
+            File(rootfsDir, "tmp").apply {
+                mkdirs()
+                setReadable(true, false)
+                setWritable(true, false)
+                setExecutable(true, false)
             }
 
             // Clean up any stale hub files for this port
             val staleHubFile = File(isolatedGeminiDir, "$appDataSubdir/daemon/hub_$actualPort.json")
             if (staleHubFile.exists()) staleHubFile.delete()
 
-            val backendCmd = listOf(
-                prootFile.absolutePath,
-                "-r", rootfsDir.absolutePath,
-                "-b", "/proc",
-                "-b", "/dev",
-                "-b", "/sys",
-                "/usr/bin/language_server",
-                "--standalone=true",
-                "--persistent_mode=false",
-                "--http_server_port=$actualPort",
-                "--csrf_token=$csrfToken",
-                "--gemini_dir=/tmp/gemini_app",
-                "--app_data_dir=$appDataSubdir",
-                "--disable_telemetry=true",
-                "--headless=false",
-                "--override_ide_name=antigravity",
-                "--override_ide_version=2.29.1",
-                "--override_user_agent_name=antigravity",
-                "--subclient_type=hub",
-                "--api_server_url=https://generativelanguage.googleapis.com",
-                "--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com",
-                "--enable_sidecars=true"
-            )
+            val backendCmd = buildList {
+                add(prootFile.absolutePath)
+                // -0 forces root emulation so forked bash/python subcommands don't get EPERM (operation not permitted)
+                add("-0")
+                add("-r")
+                add(rootfsDir.absolutePath)
+                add("-b")
+                add("/proc")
+                add("-b")
+                add("/dev")
+                if (File("/dev/pts").exists()) {
+                    add("-b")
+                    add("/dev/pts")
+                }
+                add("-b")
+                add("/sys")
+                // Bind Android internal tmp into rootfs tmp for seamless subshell temp file creation
+                add("-b")
+                add("${tmpDir.absolutePath}:/tmp")
+                add("-w")
+                add("/tmp/gemini_app")
+                add("/usr/bin/language_server")
+                add("--standalone=true")
+                add("--persistent_mode=false")
+                add("--http_server_port=$actualPort")
+                add("--csrf_token=$csrfToken")
+                add("--gemini_dir=/tmp/gemini_app")
+                add("--app_data_dir=$appDataSubdir")
+                add("--disable_telemetry=true")
+                add("--headless=false")
+                add("--override_ide_name=antigravity")
+                add("--override_ide_version=2.29.1")
+                add("--override_user_agent_name=antigravity")
+                add("--subclient_type=hub")
+                add("--api_server_url=https://generativelanguage.googleapis.com")
+                add("--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com")
+                add("--enable_sidecars=true")
+            }
 
             Log.i(TAG, "Launching backend process: ${backendCmd.joinToString(" ")}")
             val pb = ProcessBuilder(backendCmd)
@@ -171,13 +201,15 @@ class LocalBackendLifecycleManager(
                 mapOf(
                     "HOME" to "/root",
                     "USER" to "root",
-                    "PATH" to "/usr/bin:/bin",
+                    "PATH" to "/usr/bin:/bin:/usr/local/bin",
                     "LD_LIBRARY_PATH" to nativeLibDir,
                     "PROOT_LOADER" to loaderFile.absolutePath,
                     "PROOT_TMP_DIR" to tmpDir.absolutePath,
+                    "PROOT_NO_SECCOMP" to "1",
                     "ANTIGRAVITY_VSCODE_HOST" to "1",
                     "SSL_CERT_FILE" to "/etc/ssl/certs/ca-certificates.crt",
-                    "SSL_CERT_DIR" to "/etc/ssl/certs"
+                    "SSL_CERT_DIR" to "/etc/ssl/certs",
+                    "TMPDIR" to "/tmp"
                 )
             )
 

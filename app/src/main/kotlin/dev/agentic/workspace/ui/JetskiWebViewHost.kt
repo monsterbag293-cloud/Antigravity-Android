@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -695,12 +696,23 @@ fun JetskiWebViewHost(
         }
     }
 
+    // Automatically refresh/sync data once Hub becomes ready
+    androidx.compose.runtime.LaunchedEffect(isHubReady) {
+        if (isHubReady) {
+            webViewRef?.evaluateJavascript(
+                "(function(){ if(window.dispatchEvent){ window.dispatchEvent(new CustomEvent('antigravity:auth-changed')); } })();",
+                null
+            )
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.imeAnimationTarget)
             .background(Color(0xFF000000))
             .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         // Main WebView + Loading / Error Overlay
         Box(

@@ -40,6 +40,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Ensure system navigation bar is pure black matching Antigravity theme
+        window.navigationBarColor = android.graphics.Color.BLACK
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
 
         val projectRepository = InMemoryProjectRepository()
         val conversationRepository = InMemoryConversationRepository()
@@ -114,7 +119,10 @@ class MainActivity : ComponentActivity() {
             if (rpcHandler.backendMode == BackendMode.STANDALONE_IN_APP_BACKEND) {
                 Log.i(TAG, "Mode B active: auto-starting standalone on-device backend...")
                 val result = lifecycleManager.startBackend()
-                if (result.isFailure) {
+                if (result.isSuccess) {
+                    Log.i(TAG, "Backend started successfully; triggering immediate first-boot data sync")
+                    syncManager.syncAll()
+                } else if (result.isFailure) {
                     val err = result.exceptionOrNull()
                     Log.w(TAG, "Backend start failed (${err?.message}); automatically falling back to in-app Gemini handler")
                     rpcHandler.setBackendMode(BackendMode.LOCAL_GEMINI_FALLBACK)
