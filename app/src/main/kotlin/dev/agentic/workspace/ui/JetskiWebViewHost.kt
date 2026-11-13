@@ -649,6 +649,11 @@ fun JetskiWebViewHost(
                 Lifecycle.Event.ON_RESUME -> {
                     webView.onResume()
                     webView.resumeTimers()
+                    // Re-query auth and state upon returning from external browser / auth flow
+                    webView.evaluateJavascript(
+                        "(function(){ if(window.dispatchEvent){ window.dispatchEvent(new CustomEvent('antigravity:auth-changed')); } })();",
+                        null
+                    )
                     if (remoteHostUrl != null || requestInterceptor.isHubConnected()) {
                         webView.postDelayed({
                             webView.evaluateJavascript(

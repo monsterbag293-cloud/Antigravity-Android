@@ -394,6 +394,36 @@ class LanguageServerGrpcWebHandler(
 
     fun getTrajectoriesSnapshot(): Map<String, CascadeTrajectoryRecord> = trajectories.toMap()
 
+    /**
+     * Imports or updates a trajectory record into memory so that the Jetski Web frontend can display
+     * conversations synchronized from the laptop / genuine Hub.
+     */
+    fun importTrajectory(record: CascadeTrajectoryRecord) {
+        trajectories[record.cascadeId] = record
+        val projId = record.projectId
+        if (projId.isNotBlank()) {
+            val proj = projects[projId]
+            if (proj != null && record.cascadeId !in proj.conversationIds) {
+                proj.conversationIds.add(record.cascadeId)
+            }
+        }
+    }
+
+    /**
+     * Clears all non-essential trajectories and replaces them with the synced set from the Hub.
+     */
+    fun replaceTrajectories(newTrajectories: List<CascadeTrajectoryRecord>) {
+        trajectories.clear()
+        seedDefaultProjectAndWelcomeTrajectory()
+        for (t in newTrajectories) {
+            trajectories[t.cascadeId] = t
+            val p = projects[t.projectId]
+            if (p != null && t.cascadeId !in p.conversationIds) {
+                p.conversationIds.add(t.cascadeId)
+            }
+        }
+    }
+
     suspend fun handleRequest(request: GrpcWebHttpRequest): GrpcWebHttpResponse {
         val cleanPath = request.path.substringBefore('?')
         if (!cleanPath.startsWith(SERVICE_PREFIX)) {

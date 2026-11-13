@@ -10,6 +10,8 @@ import dev.agentic.core.model.Role
 import dev.agentic.core.model.Workspace
 import dev.agentic.core.model.WorkspaceType
 import dev.agentic.core.network.jetski.LanguageServerGrpcWebHandler
+import dev.agentic.core.network.jetski.CascadeTrajectoryRecord
+import dev.agentic.core.network.jetski.CascadeStepRecord
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -340,6 +342,38 @@ class HubDataSyncManager(
             if (messages.isNotEmpty()) {
                 conversationRepository.setMessages(cascadeId, messages)
                 Log.i(TAG, "Loaded ${messages.size} messages for conversation $cascadeId")
+
+                // Inject into rpcHandler so that the in-process fallback and Jetski Web UI can immediately display them
+                rpcHandler?.let { handler ->
+                    val now = Instant.now().toString()
+                    val stepRecords = java.util.concurrent.CopyOnWriteArrayList<CascadeStepRecord>()
+                    for ((stepIdx, msg) in messages.withIndex()) {
+                        val isUser = msg.role == Role.USER
+                        stepRecords.add(
+                            CascadeStepRecord(
+                                stepIndex = stepIdx,
+                                type = if (isUser) "CORTEX_STEP_TYPE_USER_INPUT" else "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                                status = "CORTEX_STEP_STATUS_DONE",
+                                createdAtIso = now,
+                                completedAtIso = now,
+                                userText = if (isUser) msg.content else null,
+                                plannerResponseText = if (!isUser) msg.content else null
+                            )
+                        )
+                    }
+                    val trajectoryRecord = CascadeTrajectoryRecord(
+                        cascadeId = cascadeId,
+                        trajectoryId = "traj-$cascadeId",
+                        projectId = "f62d4d56-8673-4da6-a2c0-458e5e2eb5bd",
+                        summary = messages.firstOrNull { it.role == Role.USER }?.content?.take(60) ?: "Synced Conversation",
+                        status = "CASCADE_RUN_STATUS_IDLE",
+                        fullyIdle = true,
+                        createdTimeIso = now,
+                        lastModifiedTimeIso = now,
+                        steps = stepRecords
+                    )
+                    handler.importTrajectory(trajectoryRecord)
+                }
             }
             return stepsArray.size
 
