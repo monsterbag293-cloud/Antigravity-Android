@@ -84,6 +84,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import dev.agentic.core.network.jetski.JetskiWebViewRequestInterceptor
+import dev.agentic.core.network.hub.LocalBackendLifecycleManager
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.imeAnimationTarget
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -106,6 +108,7 @@ private const val JETBOX_DARK_BG_COLOR = -0x1000000 // 0xFF000000.toInt() OLED P
 fun JetskiWebViewHost(
     requestInterceptor: JetskiWebViewRequestInterceptor,
     remoteHostUrl: String? = null,
+    backendLifecycleManager: LocalBackendLifecycleManager? = null,
     onOpenHostControls: () -> Unit,
     onSwitchToFallbackMode: () -> Unit,
     modifier: Modifier = Modifier
@@ -715,22 +718,44 @@ fun JetskiWebViewHost(
                     }.getOrNull()
                     if (tf != null) androidx.compose.ui.text.font.FontFamily(tf) else androidx.compose.ui.text.font.FontFamily.SansSerif
                 }
-                var progressTicks by remember { androidx.compose.runtime.mutableIntStateOf(10) }
-                androidx.compose.runtime.LaunchedEffect(Unit) {
-                    while (progressTicks < 92) {
-                        kotlinx.coroutines.delay(600)
-                        progressTicks += when {
-                            progressTicks < 40 -> 8
-                            progressTicks < 75 -> 4
-                            else -> 1
-                        }
+
+                val currentBackendState by (backendLifecycleManager?.backendState
+                    ?: kotlinx.coroutines.flow.MutableStateFlow(LocalBackendLifecycleManager.LocalBackendState.Stopped)
+                ).collectAsState()
+
+                val (displayPercent, statusMessage, subMessage) = when (val s = currentBackendState) {
+                    is LocalBackendLifecycleManager.LocalBackendState.Provisioning -> {
+                        val p = s.percent.coerceIn(1, 99)
+                        val msg = if (s.message.isNotBlank()) s.message else "Preparing workspace..."
+                        val sub = if (s.stage.isNotBlank()) "Setup • ${s.stage}" else "Extracting and verifying backend..."
+                        Triple(p, msg, sub)
+                    }
+                    is LocalBackendLifecycleManager.LocalBackendState.Starting -> {
+                        val msg = if (s.message.isNotBlank()) s.message else "Starting engine..."
+                        Triple(92, msg, "Initializing local language server daemon...")
+                    }
+                    is LocalBackendLifecycleManager.LocalBackendState.Error -> {
+                        Triple(92, "Connecting fallback engine...", "Notice: ${s.message.take(60)}")
+                    }
+                    else -> {
+                        Triple(50, "Connecting workspace engine...", "Initializing services...")
                     }
                 }
+
+                // Smooth animated progress value
+                val animatedProgress by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = displayPercent / 100f,
+                    animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                    label = "loadingProgress"
+                )
+
                 val estSec = when {
-                    progressTicks < 40 -> 6
-                    progressTicks < 75 -> 3
+                    displayPercent < 40 -> 15
+                    displayPercent < 75 -> 8
+                    displayPercent < 90 -> 4
                     else -> 1
                 }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -761,7 +786,7 @@ fun JetskiWebViewHost(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         androidx.compose.material3.LinearProgressIndicator(
-                            progress = { progressTicks / 100f },
+                            progress = { animatedProgress },
                             modifier = Modifier
                                 .fillMaxWidth(0.75f)
                                 .height(6.dp)
@@ -771,7 +796,7 @@ fun JetskiWebViewHost(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "$progressTicks% • Estimated wait: ~$estSec sec",
+                            text = "$displayPercent% • Estimated wait: ~$estSec sec",
                             style = androidx.compose.material3.MaterialTheme.typography.labelMedium.copy(
                                 fontFamily = googleSans,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
@@ -780,13 +805,24 @@ fun JetskiWebViewHost(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Connecting workspace engine...",
+                            text = statusMessage,
                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = googleSans
                             ),
-                            color = Color(0xFF70757A),
+                            color = Color(0xFFBDC1C6),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
+                        if (subMessage.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = subMessage,
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = googleSans
+                                ),
+                                color = Color(0xFF70757A),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
                     }
                 }
             } else if (isPageLoading) {

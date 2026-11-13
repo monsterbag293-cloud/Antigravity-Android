@@ -174,6 +174,7 @@ fun AppNavigationScaffold(
                 } else {
                     null
                 },
+                backendLifecycleManager = backendLifecycleManager,
                 onOpenHostControls = {
                     showHostSettingsDialog = true
                 },
