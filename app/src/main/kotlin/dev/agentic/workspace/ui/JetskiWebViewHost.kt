@@ -85,6 +85,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import dev.agentic.core.network.jetski.JetskiWebViewRequestInterceptor
 import dev.agentic.core.network.hub.LocalBackendLifecycleManager
+import dev.agentic.core.network.hub.BackendMode
+import dev.agentic.core.network.jetski.LanguageServerGrpcWebHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.imeAnimationTarget
 import android.speech.RecognitionListener
@@ -109,6 +111,7 @@ fun JetskiWebViewHost(
     requestInterceptor: JetskiWebViewRequestInterceptor,
     remoteHostUrl: String? = null,
     backendLifecycleManager: LocalBackendLifecycleManager? = null,
+    rpcHandler: LanguageServerGrpcWebHandler? = null,
     onOpenHostControls: () -> Unit,
     onSwitchToFallbackMode: () -> Unit,
     modifier: Modifier = Modifier
@@ -467,8 +470,23 @@ fun JetskiWebViewHost(
         val flow = requestInterceptor.hubConnectionStateFlow ?: return@LaunchedEffect
         flow.collect { hubConnectionState.value = it }
     }
-    val isHubReady = remember(hubConnectionState.value, remoteHostUrl) {
-        remoteHostUrl != null || requestInterceptor.isHubConnected()
+    val currentBackendState by (backendLifecycleManager?.backendState
+        ?: kotlinx.coroutines.flow.MutableStateFlow(LocalBackendLifecycleManager.LocalBackendState.Stopped)
+    ).collectAsState()
+
+    // Auto-fallback watchdog: If backend provisioning or starting errors out,
+    // automatically switch the in-memory rpcHandler to LOCAL_GEMINI_FALLBACK mode so the app enters the UI seamlessly.
+    var fallbackTriggered by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(currentBackendState) {
+        if (currentBackendState is LocalBackendLifecycleManager.LocalBackendState.Error && !fallbackTriggered) {
+            fallbackTriggered = true
+            Log.w("JetskiWebViewHost", "Backend state entered Error: ${(currentBackendState as LocalBackendLifecycleManager.LocalBackendState.Error).message}. Auto-switching rpcHandler to LOCAL_GEMINI_FALLBACK.")
+            rpcHandler?.setBackendMode(BackendMode.LOCAL_GEMINI_FALLBACK)
+        }
+    }
+
+    val isHubReady = remember(hubConnectionState.value, remoteHostUrl, currentBackendState, fallbackTriggered) {
+        remoteHostUrl != null || requestInterceptor.isHubConnected() || fallbackTriggered
     }
     val waitingHtml = remember {
         """
@@ -718,10 +736,6 @@ fun JetskiWebViewHost(
                     }.getOrNull()
                     if (tf != null) androidx.compose.ui.text.font.FontFamily(tf) else androidx.compose.ui.text.font.FontFamily.SansSerif
                 }
-
-                val currentBackendState by (backendLifecycleManager?.backendState
-                    ?: kotlinx.coroutines.flow.MutableStateFlow(LocalBackendLifecycleManager.LocalBackendState.Stopped)
-                ).collectAsState()
 
                 val (displayPercent, statusMessage, subMessage) = when (val s = currentBackendState) {
                     is LocalBackendLifecycleManager.LocalBackendState.Provisioning -> {

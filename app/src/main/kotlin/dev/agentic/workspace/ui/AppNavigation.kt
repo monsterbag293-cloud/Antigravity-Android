@@ -175,6 +175,7 @@ fun AppNavigationScaffold(
                     null
                 },
                 backendLifecycleManager = backendLifecycleManager,
+                rpcHandler = rpcHandler,
                 onOpenHostControls = {
                     showHostSettingsDialog = true
                 },

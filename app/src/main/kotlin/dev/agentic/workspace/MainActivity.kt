@@ -113,7 +113,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             if (rpcHandler.backendMode == BackendMode.STANDALONE_IN_APP_BACKEND) {
                 Log.i(TAG, "Mode B active: auto-starting standalone on-device backend...")
-                lifecycleManager.startBackend()
+                val result = lifecycleManager.startBackend()
+                if (result.isFailure) {
+                    val err = result.exceptionOrNull()
+                    Log.w(TAG, "Backend start failed (${err?.message}); automatically falling back to in-app Gemini handler")
+                    rpcHandler.setBackendMode(BackendMode.LOCAL_GEMINI_FALLBACK)
+                }
             }
         }
 
