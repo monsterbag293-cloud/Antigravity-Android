@@ -1,0 +1,30 @@
+name: "Feature Request"
+description: "Suggest an idea or UX enhancement for the Antigravity Android experience"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea to make Antigravity better on mobile? We'd love to hear it!
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem or Limitation"
+      description: "Is your feature request related to a specific limitation or pain point on mobile?"
+      placeholder: "When working with long conversation prompts on a narrow screen, it is difficult to..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: "Proposed Solution"
+      description: "Describe the solution or behavior you would like to see."
+      placeholder: "Add a collapsible quick-action toolbar above the mobile soft keyboard..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternative Solutions Considered"
+      description: "Any alternative approaches or mockups you have considered?"

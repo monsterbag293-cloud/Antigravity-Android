@@ -1,0 +1,63 @@
+name: "Bug Report"
+description: "File a bug or unexpected behavior in the Antigravity Android app"
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue! Please provide as much detail as possible to help reproduce and fix the bug.
+  - type: input
+    id: device
+    attributes:
+      label: "Device Model"
+      description: "What Android device are you using? (e.g., Google Pixel 10 Pro, Samsung Galaxy S24)"
+      placeholder: "Google Pixel 10 Pro"
+    validations:
+      required: true
+  - type: input
+    id: android_version
+    attributes:
+      label: "Android Version"
+      description: "Which version of Android is installed? (e.g., Android 15 / 16 Preview)"
+      placeholder: "Android 15"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: "Affected Area"
+      options:
+        - "Navigation & Sidebar Gestures"
+        - "Chat & Conversation Rendering"
+        - "Drag and Drop (Projects / Chats)"
+        - "Plugins & Account Sign-In"
+        - "Splash & Startup Loading"
+        - "App Icon & Visual Styling"
+        - "Other / Unsure"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to Reproduce"
+      description: "Step-by-step instructions to reproduce the issue."
+      placeholder: |
+        1. Open the app
+        2. Swipe from the left edge to open the sidebar
+        3. Tap on conversation 'X'
+        4. See error / visual glitch
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected Behavior"
+      description: "What should have happened?"
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Screenshots or Screen Recording"
+      description: "Drag and drop screenshots or screen recordings showing the issue."

@@ -1,0 +1,16 @@
+# Gradle build outputs and caches
+.gradle/
+build/
+*/build/
+*.iml
+.idea/
+local.properties
+.DS_Store
+
+# Temporary scratch scripts & logs
+scratch/
+*.log
+
+# Large local caches
+.cxx/
+captures/
