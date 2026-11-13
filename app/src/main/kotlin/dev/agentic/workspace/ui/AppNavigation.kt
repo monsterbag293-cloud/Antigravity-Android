@@ -155,8 +155,10 @@ fun AppNavigationScaffold(
         androidx.compose.runtime.mutableStateOf(false)
     }
 
-    if (localBackendState is LocalBackendLifecycleManager.LocalBackendState.Provisioning) {
-        SettingThingsUpLoadingScreen(state = localBackendState as LocalBackendLifecycleManager.LocalBackendState.Provisioning)
+    if (localBackendState is LocalBackendLifecycleManager.LocalBackendState.Provisioning ||
+        localBackendState is LocalBackendLifecycleManager.LocalBackendState.Starting
+    ) {
+        SettingThingsUpLoadingScreen(state = localBackendState)
         return
     }
 
@@ -524,7 +526,7 @@ fun AppNavigationScaffold(
 
 @Composable
 fun SettingThingsUpLoadingScreen(
-    state: LocalBackendLifecycleManager.LocalBackendState.Provisioning
+    state: LocalBackendLifecycleManager.LocalBackendState
 ) {
     Box(
         modifier = Modifier
@@ -540,6 +542,28 @@ fun SettingThingsUpLoadingScreen(
             }.getOrNull()
             if (tf != null) androidx.compose.ui.text.font.FontFamily(tf) else androidx.compose.ui.text.font.FontFamily.SansSerif
         }
+
+        val percent = when (state) {
+            is LocalBackendLifecycleManager.LocalBackendState.Provisioning -> state.percent.coerceIn(0, 100)
+            is LocalBackendLifecycleManager.LocalBackendState.Starting -> 90
+            else -> 100
+        }
+
+        val estimatedWaitSec = when {
+            percent < 30 -> 15
+            percent < 70 -> 8
+            percent < 90 -> 4
+            else -> 2
+        }
+
+        val stageMessage = when (state) {
+            is LocalBackendLifecycleManager.LocalBackendState.Provisioning -> {
+                if (state.stage.isNotBlank()) "Preparing workspace • ${state.stage}" else "Preparing workspace..."
+            }
+            is LocalBackendLifecycleManager.LocalBackendState.Starting -> "Starting engine..."
+            else -> "Finalizing..."
+        }
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -565,7 +589,7 @@ fun SettingThingsUpLoadingScreen(
             )
             Spacer(modifier = Modifier.height(16.dp))
             LinearProgressIndicator(
-                progress = { (state.percent.coerceIn(0, 100)) / 100f },
+                progress = { percent / 100f },
                 modifier = Modifier
                     .fillMaxWidth(0.75f)
                     .height(6.dp)
@@ -573,19 +597,24 @@ fun SettingThingsUpLoadingScreen(
                 color = Color(0xFF4285F4),
                 trackColor = Color(0xFF202124)
             )
-            if (state.message.isNotBlank() &&
-                !state.message.contains("sync", ignoreCase = true) &&
-                !state.message.contains("account", ignoreCase = true) &&
-                !state.message.contains("chat", ignoreCase = true)
-            ) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = state.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF9AA0A6),
-                    textAlign = TextAlign.Center
-                )
-            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "$percent% • Estimated wait: ~$estimatedWaitSec sec",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = googleSans,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = Color(0xFF9AA0A6)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = stageMessage,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = googleSans
+                ),
+                color = Color(0xFF70757A),
+                textAlign = TextAlign.Center
+            )
         }
     }
 }

@@ -46,6 +46,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
@@ -710,13 +715,32 @@ fun JetskiWebViewHost(
                     }.getOrNull()
                     if (tf != null) androidx.compose.ui.text.font.FontFamily(tf) else androidx.compose.ui.text.font.FontFamily.SansSerif
                 }
+                var progressTicks by remember { androidx.compose.runtime.mutableIntStateOf(10) }
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    while (progressTicks < 92) {
+                        kotlinx.coroutines.delay(600)
+                        progressTicks += when {
+                            progressTicks < 40 -> 8
+                            progressTicks < 75 -> 4
+                            else -> 1
+                        }
+                    }
+                }
+                val estSec = when {
+                    progressTicks < 40 -> 6
+                    progressTicks < 75 -> 3
+                    else -> 1
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color(0xFF000000)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 32.dp)
+                    ) {
                         Text(
                             text = "ANTIGRAVITY",
                             style = androidx.compose.material3.MaterialTheme.typography.headlineMedium.copy(
@@ -734,6 +758,34 @@ fun JetskiWebViewHost(
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
                             ),
                             color = Color(0xFFE2E8F0)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { progressTicks / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth(0.75f)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = Color(0xFF4285F4),
+                            trackColor = Color(0xFF202124)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "$progressTicks% • Estimated wait: ~$estSec sec",
+                            style = androidx.compose.material3.MaterialTheme.typography.labelMedium.copy(
+                                fontFamily = googleSans,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                            ),
+                            color = Color(0xFF9AA0A6)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Connecting workspace engine...",
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = googleSans
+                            ),
+                            color = Color(0xFF70757A),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
                 }
