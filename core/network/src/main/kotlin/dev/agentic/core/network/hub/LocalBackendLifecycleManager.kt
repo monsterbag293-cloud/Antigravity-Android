@@ -152,6 +152,15 @@ class LocalBackendLifecycleManager(
                 setExecutable(true, false)
             }
 
+            // Use user-accessible Downloads/Antigravity/workspaces if writable on this device
+            val publicWorkspacesDir = runCatching {
+                val dl = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                val dir = File(dl, "Antigravity/workspaces")
+                if ((dir.exists() || dir.mkdirs()) && dir.canWrite()) dir else null
+            }.getOrNull()
+
             // Clean up any stale hub files for this port
             val staleHubFile = File(isolatedGeminiDir, "$appDataSubdir/daemon/hub_$actualPort.json")
             if (staleHubFile.exists()) staleHubFile.delete()
@@ -166,15 +175,12 @@ class LocalBackendLifecycleManager(
                 add("/proc")
                 add("-b")
                 add("/dev")
-                if (File("/dev/pts").exists()) {
-                    add("-b")
-                    add("/dev/pts")
-                }
                 add("-b")
                 add("/sys")
-                // Bind Android internal tmp into rootfs tmp for seamless subshell temp file creation
-                add("-b")
-                add("${tmpDir.absolutePath}:/tmp")
+                if (publicWorkspacesDir != null) {
+                    add("-b")
+                    add("${publicWorkspacesDir.absolutePath}:/tmp/gemini_app/workspaces")
+                }
                 add("-w")
                 add("/tmp/gemini_app")
                 add("/usr/bin/language_server")

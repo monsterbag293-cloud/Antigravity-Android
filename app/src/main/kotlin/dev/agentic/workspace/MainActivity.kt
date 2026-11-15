@@ -31,6 +31,15 @@ import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        @Volatile
+        var pendingDeepLink: String? = null
+        val deepLinkFlow = kotlinx.coroutines.flow.MutableSharedFlow<String>(
+            replay = 1,
+            extraBufferCapacity = 4
+        )
+    }
+
     private val TAG = "MainActivity"
     private var backendLifecycleManager: LocalBackendLifecycleManager? = null
     private var dataSyncManager: dev.agentic.core.network.hub.HubDataSyncManager? = null
@@ -150,7 +159,8 @@ class MainActivity : ComponentActivity() {
         }
 
         val bundledFile = File(filesDir, "jetski-bundle.zip")
-        if (!bundledFile.exists() || bundledFile.length() == 0L) {
+        val assetLen = runCatching { assets.openFd("jetski-bundle.zip").length }.getOrDefault(-1L)
+        if (!bundledFile.exists() || bundledFile.length() == 0L || (assetLen > 0L && bundledFile.length() != assetLen)) {
             try {
                 assets.open("jetski-bundle.zip").use { input ->
                     bundledFile.outputStream().use { output ->
@@ -217,10 +227,13 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
+        val fullUri = uri.toString()
         Log.i(TAG, "Received deep-link URI: ${uri.scheme}://${uri.host}${uri.path}")
         if (uri.scheme.equals("antigravity", ignoreCase = true)) {
             val queryKeys = uri.queryParameterNames.joinToString(", ")
             Log.i(TAG, "Antigravity deep-link query parameter keys: $queryKeys")
+            pendingDeepLink = fullUri
+            deepLinkFlow.tryEmit(fullUri)
         }
     }
 

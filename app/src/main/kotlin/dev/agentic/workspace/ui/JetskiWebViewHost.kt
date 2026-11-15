@@ -161,6 +161,20 @@ fun JetskiWebViewHost(
         }
     }
 
+    var pendingSpeechStart by remember { mutableStateOf(false) }
+
+    val speechIntentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            val text = matches?.firstOrNull()
+            if (!text.isNullOrBlank()) {
+                webViewRef?.evaluateJavascript("window.__insertRecognizedSpeech?.(${JSONObject.quote(text)});", null)
+            }
+        }
+    }
+
     val audioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -171,6 +185,12 @@ fun JetskiWebViewHost(
                 req.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
             } else {
                 req.deny()
+            }
+        }
+        if (pendingSpeechStart) {
+            pendingSpeechStart = false
+            if (granted) {
+                webViewRef?.evaluateJavascript("window.__ANTIGRAVITY_ANDROID_BRIDGE__?.startSpeechToText?.();", null)
             }
         }
     }
@@ -220,8 +240,7 @@ fun JetskiWebViewHost(
 
                     @JavascriptInterface
                     fun listWorkspaceFolders(): String {
-                        val root = File(context.filesDir, "rootfs/tmp/gemini_app/workspaces")
-                        if (!root.exists()) root.mkdirs()
+                        val root = dev.agentic.workspace.provider.AntigravityDocumentsProvider.resolveWorkspacesRoot(context)
                         val arr = JSONArray()
                         root.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() }?.forEach { dir ->
                             val obj = org.json.JSONObject()
@@ -238,10 +257,14 @@ fun JetskiWebViewHost(
                             .replace(Regex("[/\\\\:*?\"<>|]+"), "-")
                             .trim('.', ' ')
                             .ifEmpty { "my-project" }
-                        val root = File(context.filesDir, "rootfs/tmp/gemini_app/workspaces")
-                        if (!root.exists()) root.mkdirs()
+                        val root = dev.agentic.workspace.provider.AntigravityDocumentsProvider.resolveWorkspacesRoot(context)
                         val target = File(root, sanitized)
                         if (!target.exists()) target.mkdirs()
+                        // Also mirror folder inside rootfs/tmp/gemini_app/workspaces if root is external
+                        val internalRoot = File(context.filesDir, "rootfs/tmp/gemini_app/workspaces")
+                        if (internalRoot.absolutePath != root.absolutePath) {
+                            File(internalRoot, sanitized).apply { if (!exists()) mkdirs() }
+                        }
                         return "/tmp/gemini_app/workspaces/$sanitized"
                     }
 
@@ -374,6 +397,50 @@ fun JetskiWebViewHost(
                     @JavascriptInterface
                     fun revealInFilePicker(path: String) {
                         Log.i("JetskiWebViewHost", "revealInFilePicker: $path")
+                        mainHandler.post {
+                            try {
+                                val docId = dev.agentic.workspace.provider.AntigravityDocumentsProvider.documentIdForPath(context, path)
+                                val docUri = android.provider.DocumentsContract.buildDocumentUri(
+                                    dev.agentic.workspace.provider.AntigravityDocumentsProvider.AUTHORITY,
+                                    docId
+                                )
+                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(docUri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                if (viewIntent.resolveActivity(context.packageManager) != null) {
+                                    context.startActivity(viewIntent)
+                                    return@post
+                                }
+                                val browseRootIntent = Intent(Intent.ACTION_VIEW).apply {
+                                    val rootUri = android.provider.DocumentsContract.buildRootUri(
+                                        dev.agentic.workspace.provider.AntigravityDocumentsProvider.AUTHORITY,
+                                        "antigravity_workspaces_root"
+                                    )
+                                    data = rootUri
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                if (browseRootIntent.resolveActivity(context.packageManager) != null) {
+                                    context.startActivity(browseRootIntent)
+                                    return@post
+                                }
+                                val downloadsIntent = Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(downloadsIntent)
+                            } catch (e: Exception) {
+                                Log.w("JetskiWebViewHost", "Failed to open Android Files app for $path: ${e.message}")
+                                runCatching {
+                                    val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                        type = "*/*"
+                                        addCategory(Intent.CATEGORY_OPENABLE)
+                                    }
+                                    context.startActivity(Intent.createChooser(fallback, "Open Files").apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                }
+                            }
+                        }
                     }
 
                     @JavascriptInterface
@@ -383,7 +450,9 @@ fun JetskiWebViewHost(
 
                     @JavascriptInterface
                     fun getStoredDeepLink(): String {
-                        return ""
+                        val pending = dev.agentic.workspace.MainActivity.pendingDeepLink
+                        dev.agentic.workspace.MainActivity.pendingDeepLink = null
+                        return pending ?: ""
                     }
 
                     @JavascriptInterface
@@ -401,17 +470,25 @@ fun JetskiWebViewHost(
                     fun startSpeechToText() {
                         mainHandler.post {
                             try {
-                                if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-                                    Log.w("JetskiWebViewHost", "SpeechRecognizer is not available on device")
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                    pendingSpeechStart = true
+                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     return@post
                                 }
-                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak now...")
+                                }
+                                if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                                    Log.w("JetskiWebViewHost", "SpeechRecognizer service unavailable; launching system speech intent")
+                                    speechIntentLauncher.launch(recognizerIntent)
                                     return@post
                                 }
                                 speechRecognizer?.destroy()
                                 val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
                                 speechRecognizer = recognizer
+                                var insertedFinal = false
                                 recognizer.setRecognitionListener(object : RecognitionListener {
                                     override fun onReadyForSpeech(params: Bundle?) {}
                                     override fun onBeginningOfSpeech() {}
@@ -419,31 +496,36 @@ fun JetskiWebViewHost(
                                     override fun onBufferReceived(buffer: ByteArray?) {}
                                     override fun onEndOfSpeech() {}
                                     override fun onError(error: Int) {
-                                        Log.w("JetskiWebViewHost", "SpeechRecognizer error: $error")
+                                        Log.w("JetskiWebViewHost", "SpeechRecognizer error: $error; resetting state")
+                                        if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                                            runCatching { speechIntentLauncher.launch(recognizerIntent) }
+                                        } else {
+                                            this@apply.evaluateJavascript("window.__agyVoiceRecording = false;", null)
+                                        }
                                     }
                                     override fun onResults(results: Bundle?) {
                                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                         val text = matches?.firstOrNull()
                                         if (!text.isNullOrBlank()) {
+                                            insertedFinal = true
                                             this@apply.evaluateJavascript("window.__insertRecognizedSpeech?.(${JSONObject.quote(text)});", null)
+                                        } else {
+                                            this@apply.evaluateJavascript("window.__agyVoiceRecording = false;", null)
                                         }
                                     }
                                     override fun onPartialResults(partialResults: Bundle?) {
                                         val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                         val text = matches?.firstOrNull()
-                                        if (!text.isNullOrBlank()) {
+                                        if (!text.isNullOrBlank() && !insertedFinal) {
                                             Log.d("JetskiWebViewHost", "Speech partial result: $text")
                                         }
                                     }
                                     override fun onEvent(eventType: Int, params: Bundle?) {}
                                 })
-                                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                                }
-                                recognizer.startListening(intent)
+                                recognizer.startListening(recognizerIntent)
                             } catch (e: Exception) {
                                 Log.e("JetskiWebViewHost", "Failed to start speech recognition: ${e.message}", e)
+                                this@apply.evaluateJavascript("window.__agyVoiceRecording = false;", null)
                             }
                         }
                     }
@@ -703,6 +785,20 @@ fun JetskiWebViewHost(
                 "(function(){ if(window.dispatchEvent){ window.dispatchEvent(new CustomEvent('antigravity:auth-changed')); } })();",
                 null
             )
+        }
+    }
+
+    // Forward incoming antigravity:// deep links (e.g. customization OAuth callbacks) to Jetski Web
+    androidx.compose.runtime.LaunchedEffect(webView) {
+        dev.agentic.workspace.MainActivity.deepLinkFlow.collect { url ->
+            if (url.isNotBlank()) {
+                dev.agentic.workspace.MainActivity.pendingDeepLink = null
+                webView.evaluateJavascript(
+                    "window.__dispatchDeepLink?.(${JSONObject.quote(url)});" +
+                        "window.dispatchEvent?.(new CustomEvent('antigravity:auth-changed'));",
+                    null
+                )
+            }
         }
     }
 
