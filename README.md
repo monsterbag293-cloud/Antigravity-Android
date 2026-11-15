@@ -2,7 +2,9 @@
 
 [![Platform: Android](https://img.shields.io/badge/Platform-Android%2014%2B-3DDC84.svg?style=flat&logo=android)](https://www.android.com/)
 [![Built with: Kotlin & Jetpack Compose](https://img.shields.io/badge/Built%20with-Kotlin%20%7C%20Jetpack%20Compose-7F52FF.svg?style=flat&logo=kotlin)](https://developer.android.com/jetpack/compose)
-[![Status: Experimental Preview](https://img.shields.io/badge/Status-Preview%20Build-orange.svg?style=flat)](#downloads)
+[![Status: Experimental Preview](https://img.shields.io/badge/Status-Preview%20Build-orange.svg?style=flat)](#quick-download)
+[![Latest Release](https://img.shields.io/github/v/release/monsterbag293-cloud/Antigravity-Android?include_prereleases&label=latest%20release&color=blue)](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)
+[![GitHub Stars](https://img.shields.io/github/stars/monsterbag293-cloud/Antigravity-Android?style=flat&logo=github)](https://github.com/monsterbag293-cloud/Antigravity-Android/stargazers)
 
 An unofficial native Android port and mobile compatibility runtime for **Google Antigravity**, allowing developers to run Antigravity's autonomous agent environment and workspace directly on Android phones and tablets without requiring a desktop tether.
 
@@ -15,6 +17,33 @@ An unofficial native Android port and mobile compatibility runtime for **Google 
 > * **Google Antigravity**, **Gemini**, and related trademarks, logos, and service assets are the exclusive intellectual property of **Google LLC**.
 > * This repository **does NOT claim any ownership or license** over Google's proprietary binaries, assets, or trademarks.
 > * This repository does not contain a broad permissive license (such as MIT or Apache 2.0) claiming rights over the software. All rights to the underlying Antigravity software remain reserved by their respective copyright holders.
+
+---
+
+## 📥 Quick Download
+
+**Get the latest build in one click:**
+
+[![Download Latest Release](https://img.shields.io/badge/Download-Latest%20Release-blue?style=for-the-badge&logo=github)](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)
+[![Direct APK](https://img.shields.io/badge/Direct%20APK-antigravity--android--preview.apk-3DDC84?style=for-the-badge&logo=android)](dist/antigravity-android-preview.apk)
+
+| Source | What you get | Recommended for |
+|--------|--------------|-----------------|
+| **[GitHub Releases](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)** | Versioned APKs + release notes + checksums | Most users |
+| **[Direct preview APK](dist/antigravity-android-preview.apk)** (~46.7 MB) | Current committed preview build | Quick testing |
+
+> Prefer the **Releases** page for the newest tagged builds and changelogs.
+
+---
+
+## Table of Contents
+
+- [Screenshots](#screenshots)
+- [Features](#features)
+- [Installation](#installation)
+- [Project Structure](#project-structure)
+- [Building from Source](#building-from-source)
+- [Community, Issues & Feedback](#community-issues--feedback)
 
 ---
 
@@ -38,27 +67,22 @@ An unofficial native Android port and mobile compatibility runtime for **Google 
 
 ---
 
-## Downloads
-
-Download the latest compiled APK:
-
-* **[Download `antigravity-android-preview.apk`](dist/antigravity-android-preview.apk)** (~46.7 MB)
-* Or check the [GitHub Releases](https://github.com/) tab for tagged builds and release notes.
-
----
-
 ## Installation
 
-### Method 1: Direct Install on Android Phone / Tablet
-1. Download `antigravity-android-preview.apk` to your Android device.
+### Method 1: Direct Install on Android Phone / Tablet (Recommended)
+1. Download the latest APK from the [Releases](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest) page (or use the [direct preview link](dist/antigravity-android-preview.apk)).
 2. Tap the downloaded file in your browser or File Manager.
-3. If prompted, allow "Install from unknown sources" for your browser / file manager.
+3. If prompted, allow “Install from unknown sources” for your browser / file manager.
 4. Tap **Install** and open the app.
 
 ### Method 2: Via ADB (Android Debug Bridge)
 If your device is connected to a computer with USB debugging enabled:
 
 ```bash
+# Download the APK first, then:
+adb install -r path/to/antigravity-android-preview.apk
+
+# Or, if you have the file in dist/:
 adb install -r dist/antigravity-android-preview.apk
 ```
 
@@ -118,4 +142,4 @@ Antigravity-Port/
 
 - **Bug Reports**: Encountered a visual glitch or gesture conflict? Open a [Bug Report](.github/ISSUE_TEMPLATE/bug_report.yml) with your device model and steps to reproduce.
 - **Feature Requests**: Have an idea for mobile UI improvements? Submit a [Feature Request](.github/ISSUE_TEMPLATE/feature_request.yml).
-- **Discussions & Ideas**: Share mobile workflows and suggest ideas in [GitHub Discussions](.github/DISCUSSION_TEMPLATE/ideas.yml).
+- **Discussions & Ideas**: Share mobile workflows and suggest ideas in [GitHub Discussions](https://github.com/monsterbag293-cloud/Antigravity-Android/discussions).
