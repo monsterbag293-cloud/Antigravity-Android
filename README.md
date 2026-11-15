@@ -140,6 +140,6 @@ Antigravity-Port/
 
 ## Community, Issues & Feedback
 
-- **Bug Reports**: Encountered a visual glitch or gesture conflict? Open a [Bug Report](.github/ISSUE_TEMPLATE/bug_report.yml) with your device model and steps to reproduce.
+- **Bug Reports**: Encountered a visual glitch or gesture conflict? Open a [Bug Report](https://github.com/monsterbag293-cloud/Antigravity-Android/issues/new?template=bug_report.yml) with your device model and steps to reproduce.
 - **Feature Requests**: Have an idea for mobile UI improvements? Submit a [Feature Request](.github/ISSUE_TEMPLATE/feature_request.yml).
 - **Discussions & Ideas**: Share mobile workflows and suggest ideas in [GitHub Discussions](https://github.com/monsterbag293-cloud/Antigravity-Android/discussions).
