@@ -115,7 +115,7 @@ class MainActivity : ComponentActivity() {
                     if (sessionKey != lastSyncedSessionKey) {
                         lastSyncedSessionKey = sessionKey
                         Log.i(TAG, "Hub connected; triggering automated auth load data synchronization...")
-                        syncManager.syncAll()
+                        triggerInitialSessionSync(syncManager)
                     }
                 } else if (state is dev.agentic.core.network.hub.HubConnectionState.Disconnected) {
                     lastSyncedSessionKey = null
@@ -130,7 +130,7 @@ class MainActivity : ComponentActivity() {
                 val result = lifecycleManager.startBackend()
                 if (result.isSuccess) {
                     Log.i(TAG, "Backend started successfully; triggering immediate first-boot data sync")
-                    syncManager.syncAll()
+                    triggerInitialSessionSync(syncManager)
                 } else if (result.isFailure) {
                     val err = result.exceptionOrNull()
                     Log.w(TAG, "Backend start failed (${err?.message}); automatically falling back to in-app Gemini handler")
@@ -252,11 +252,26 @@ class MainActivity : ComponentActivity() {
                         if (sessionKey != lastSyncedSessionKey) {
                             lastSyncedSessionKey = sessionKey
                             Log.i(TAG, "Authenticated user session active: ${status.userName} (${status.userEmail})")
-                            dataSyncManager?.syncAll()
+                            dataSyncManager?.let { triggerInitialSessionSync(it) }
                         }
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun triggerInitialSessionSync(syncManager: dev.agentic.core.network.hub.HubDataSyncManager) {
+        val firstSummary = syncManager.syncAll(force = false).getOrNull() ?: return
+        if (firstSummary.genuineConversationsCount == 0 && firstSummary.genuineProjectsCount == 0) {
+            Log.i(TAG, "Sync 1 returned 0 conversations & 0 real projects; running Sync 2 after settle delay")
+            kotlinx.coroutines.delay(1800)
+            syncManager.syncAll(force = true)
+        } else {
+            Log.i(
+                TAG,
+                "Sync 1 already loaded ${firstSummary.genuineConversationsCount} conversations and " +
+                    "${firstSummary.genuineProjectsCount} projects; skipping Sync 2"
+            )
         }
     }
 

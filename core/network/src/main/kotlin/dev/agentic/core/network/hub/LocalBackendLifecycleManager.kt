@@ -152,14 +152,32 @@ class LocalBackendLifecycleManager(
                 setExecutable(true, false)
             }
 
-            // Use user-accessible Downloads/Antigravity/workspaces if writable on this device
-            val publicWorkspacesDir = runCatching {
-                val dl = android.os.Environment.getExternalStoragePublicDirectory(
-                    android.os.Environment.DIRECTORY_DOWNLOADS
-                )
-                val dir = File(dl, "Antigravity/workspaces")
-                if ((dir.exists() || dir.mkdirs()) && dir.canWrite()) dir else null
-            }.getOrNull()
+            // Bind Android shared storage (/storage/emulated/0) into PRoot at /tmp/gemini_app/storage
+            // so projects created directly in the phone's main directory are visible inside PRoot,
+            // while keeping /tmp/gemini_app/workspaces inside rootfs for explicit linked workspace symlinks.
+            val externalRootDir = runCatching {
+                android.os.Environment.getExternalStorageDirectory()
+            }.getOrNull()?.takeIf { it.exists() }
+
+            val workspacesDir = File(rootfsDir, "tmp/gemini_app/workspaces").apply {
+                if (!exists()) mkdirs()
+            }
+            if (externalRootDir != null) {
+                workspacesDir.listFiles()?.forEach { entry ->
+                    val linkTarget = runCatching { android.system.Os.readlink(entry.absolutePath) }.getOrNull()
+                    if (linkTarget == null && entry.isDirectory && File(externalRootDir, entry.name).isDirectory) {
+                        if (entry.listFiles().isNullOrEmpty()) {
+                            entry.deleteRecursively()
+                            runCatching {
+                                android.system.Os.symlink(
+                                    "/tmp/gemini_app/storage/${entry.name}",
+                                    entry.absolutePath
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
             // Clean up any stale hub files for this port
             val staleHubFile = File(isolatedGeminiDir, "$appDataSubdir/daemon/hub_$actualPort.json")
@@ -177,9 +195,9 @@ class LocalBackendLifecycleManager(
                 add("/dev")
                 add("-b")
                 add("/sys")
-                if (publicWorkspacesDir != null) {
+                if (externalRootDir != null) {
                     add("-b")
-                    add("${publicWorkspacesDir.absolutePath}:/tmp/gemini_app/workspaces")
+                    add("${externalRootDir.absolutePath}:/tmp/gemini_app/storage")
                 }
                 add("-w")
                 add("/tmp/gemini_app")

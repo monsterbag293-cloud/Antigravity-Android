@@ -240,13 +240,47 @@ fun JetskiWebViewHost(
                     }
 
                     @JavascriptInterface
+                    fun hasAllFilesAccess(): Boolean {
+                        return dev.agentic.workspace.provider.AntigravityDocumentsProvider.hasAllFilesAccess()
+                    }
+
+                    @JavascriptInterface
+                    fun requestAllFilesAccess() {
+                        mainHandler.post {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                                val pkgIntent = Intent(
+                                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    android.net.Uri.parse("package:${context.packageName}")
+                                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                                val ok = runCatching { context.startActivity(pkgIntent); true }.getOrDefault(false)
+                                if (!ok) {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun getStatusBarInsetDp(): Float {
+                        val res = context.resources
+                        val resId = res.getIdentifier("status_bar_height", "dimen", "android")
+                        val px = if (resId > 0) res.getDimensionPixelSize(resId) else 0
+                        return px / res.displayMetrics.density
+                    }
+
+                    @JavascriptInterface
                     fun listWorkspaceFolders(): String {
-                        val root = dev.agentic.workspace.provider.AntigravityDocumentsProvider.resolveWorkspacesRoot(context)
                         val arr = JSONArray()
-                        root.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() }?.forEach { dir ->
+                        val linked = dev.agentic.workspace.provider.AntigravityDocumentsProvider.listLinkedWorkspaceFolders(context)
+                        for ((folderName, guestPath) in linked) {
                             val obj = org.json.JSONObject()
-                            obj.put("name", dir.name)
-                            obj.put("path", "/tmp/gemini_app/workspaces/${dir.name}")
+                            obj.put("name", folderName)
+                            obj.put("path", guestPath)
                             arr.put(obj)
                         }
                         return arr.toString()
@@ -258,14 +292,10 @@ fun JetskiWebViewHost(
                             .replace(Regex("[/\\\\:*?\"<>|]+"), "-")
                             .trim('.', ' ')
                             .ifEmpty { "my-project" }
-                        val root = dev.agentic.workspace.provider.AntigravityDocumentsProvider.resolveWorkspacesRoot(context)
-                        val target = File(root, sanitized)
-                        if (!target.exists()) target.mkdirs()
-                        // Also mirror folder inside rootfs/tmp/gemini_app/workspaces if root is external
-                        val internalRoot = File(context.filesDir, "rootfs/tmp/gemini_app/workspaces")
-                        if (internalRoot.absolutePath != root.absolutePath) {
-                            File(internalRoot, sanitized).apply { if (!exists()) mkdirs() }
-                        }
+                        dev.agentic.workspace.provider.AntigravityDocumentsProvider.createAndLinkProjectFolder(
+                            context,
+                            sanitized
+                        )
                         return "/tmp/gemini_app/workspaces/$sanitized"
                     }
 
@@ -400,47 +430,78 @@ fun JetskiWebViewHost(
                     fun revealInFilePicker(path: String) {
                         Log.i("JetskiWebViewHost", "revealInFilePicker: $path")
                         mainHandler.post {
+                            fun launchFilesUri(uri: android.net.Uri, mime: String?): Boolean {
+                                val filesPkgs = listOf(
+                                    null,
+                                    "com.google.android.documentsui",
+                                    "com.android.documentsui",
+                                    "com.google.android.apps.nbu.files"
+                                )
+                                for (pkg in filesPkgs) {
+                                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                                        if (mime != null) setDataAndType(uri, mime) else data = uri
+                                        if (pkg != null) setPackage(pkg)
+                                        addFlags(
+                                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                                Intent.FLAG_ACTIVITY_NEW_TASK
+                                        )
+                                    }
+                                    if (runCatching { context.startActivity(intent); true }.getOrDefault(false)) {
+                                        return true
+                                    }
+                                }
+                                return false
+                            }
+
                             try {
+                                val realDir = dev.agentic.workspace.provider.AntigravityDocumentsProvider
+                                    .resolveHostPathForWorkspaceUri(context, path)
+                                if (!realDir.exists()) realDir.mkdirs()
+
+                                val extRootPath = android.os.Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+                                val realPath = realDir.absolutePath
+                                if (realPath == extRootPath || realPath.startsWith("$extRootPath/")) {
+                                    val rel = realPath.removePrefix(extRootPath).trimStart('/')
+                                    val extDocId = if (rel.isEmpty()) "primary:" else "primary:$rel"
+                                    val extDocUri = android.provider.DocumentsContract.buildDocumentUri(
+                                        "com.android.externalstorage.documents",
+                                        extDocId
+                                    )
+                                    if (launchFilesUri(extDocUri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR)) {
+                                        return@post
+                                    }
+                                }
+
                                 val docId = dev.agentic.workspace.provider.AntigravityDocumentsProvider.documentIdForPath(context, path)
                                 val docUri = android.provider.DocumentsContract.buildDocumentUri(
                                     dev.agentic.workspace.provider.AntigravityDocumentsProvider.AUTHORITY,
                                     docId
                                 )
-                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(docUri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                if (viewIntent.resolveActivity(context.packageManager) != null) {
-                                    context.startActivity(viewIntent)
+                                if (launchFilesUri(docUri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR)) {
                                     return@post
                                 }
-                                val browseRootIntent = Intent(Intent.ACTION_VIEW).apply {
-                                    val rootUri = android.provider.DocumentsContract.buildRootUri(
-                                        dev.agentic.workspace.provider.AntigravityDocumentsProvider.AUTHORITY,
-                                        "antigravity_workspaces_root"
-                                    )
-                                    data = rootUri
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                if (browseRootIntent.resolveActivity(context.packageManager) != null) {
-                                    context.startActivity(browseRootIntent)
+
+                                val extRootUri = android.provider.DocumentsContract.buildRootUri(
+                                    "com.android.externalstorage.documents",
+                                    "primary"
+                                )
+                                if (launchFilesUri(extRootUri, null)) {
                                     return@post
                                 }
-                                val downloadsIntent = Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                                val agyRootUri = android.provider.DocumentsContract.buildRootUri(
+                                    dev.agentic.workspace.provider.AntigravityDocumentsProvider.AUTHORITY,
+                                    "antigravity_workspaces_root"
+                                )
+                                if (launchFilesUri(agyRootUri, null)) {
+                                    return@post
                                 }
-                                context.startActivity(downloadsIntent)
+
+                                android.widget.Toast.makeText(context, "Project folder: ${realDir.absolutePath}", android.widget.Toast.LENGTH_LONG).show()
                             } catch (e: Exception) {
                                 Log.w("JetskiWebViewHost", "Failed to open Android Files app for $path: ${e.message}")
-                                runCatching {
-                                    val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                                        type = "*/*"
-                                        addCategory(Intent.CATEGORY_OPENABLE)
-                                    }
-                                    context.startActivity(Intent.createChooser(fallback, "Open Files").apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    })
-                                }
+                                android.widget.Toast.makeText(context, "Could not open Files app: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
@@ -500,9 +561,10 @@ fun JetskiWebViewHost(
                                     override fun onError(error: Int) {
                                         Log.w("JetskiWebViewHost", "SpeechRecognizer error: $error; resetting state")
                                         if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                                            this@apply.evaluateJavascript("window.__agyResetMicVisual?.();", null)
                                             runCatching { speechIntentLauncher.launch(recognizerIntent) }
                                         } else {
-                                            this@apply.evaluateJavascript("window.__agyVoiceRecording = false;", null)
+                                            this@apply.evaluateJavascript("window.__agyResetMicVisual?.();", null)
                                         }
                                     }
                                     override fun onResults(results: Bundle?) {
@@ -512,7 +574,7 @@ fun JetskiWebViewHost(
                                             insertedFinal = true
                                             this@apply.evaluateJavascript("window.__insertRecognizedSpeech?.(${JSONObject.quote(text)});", null)
                                         } else {
-                                            this@apply.evaluateJavascript("window.__agyVoiceRecording = false;", null)
+                                            this@apply.evaluateJavascript("window.__agyResetMicVisual?.();", null)
                                         }
                                     }
                                     override fun onPartialResults(partialResults: Bundle?) {
@@ -527,7 +589,7 @@ fun JetskiWebViewHost(
                                 recognizer.startListening(recognizerIntent)
                             } catch (e: Exception) {
                                 Log.e("JetskiWebViewHost", "Failed to start speech recognition: ${e.message}", e)
-                                this@apply.evaluateJavascript("window.__agyVoiceRecording = false;", null)
+                                this@apply.evaluateJavascript("window.__agyResetMicVisual?.();", null)
                             }
                         }
                     }
@@ -535,6 +597,7 @@ fun JetskiWebViewHost(
                     @JavascriptInterface
                     fun stopSpeechToText() {
                         mainHandler.post {
+                            this@apply.evaluateJavascript("window.__agyResetMicVisual?.();", null)
                             try {
                                 speechRecognizer?.stopListening()
                             } catch (e: Exception) {
@@ -810,7 +873,6 @@ fun JetskiWebViewHost(
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.imeAnimationTarget)
             .background(Color(0xFF000000))
-            .windowInsetsPadding(WindowInsets.statusBars)
             .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         // Main WebView + Loading / Error Overlay

@@ -42,32 +42,138 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
             Document.COLUMN_SIZE
         )
 
+        fun hasAllFilesAccess(): Boolean {
+            return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                Environment.isExternalStorageManager()
+            } else {
+                true
+            }
+        }
+
         fun resolveWorkspacesRoot(context: Context): File {
-            val publicDir = runCatching {
-                val dl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val dir = File(dl, "Antigravity/workspaces")
-                if ((dir.exists() || dir.mkdirs()) && dir.canWrite()) dir else null
-            }.getOrNull()
+            if (hasAllFilesAccess()) {
+                val primaryRoot = Environment.getExternalStorageDirectory()
+                if (primaryRoot.exists() && primaryRoot.canWrite()) {
+                    return primaryRoot
+                }
+            }
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val root = File(downloads, "Antigravity/workspaces")
+            if (!root.exists()) {
+                root.mkdirs()
+            }
+            if (root.exists() && root.canWrite()) {
+                return root
+            }
+            val internalFallback = File(context.filesDir, "rootfs/tmp/gemini_app/workspaces")
+            if (!internalFallback.exists()) {
+                internalFallback.mkdirs()
+            }
+            return internalFallback
+        }
 
-            if (publicDir != null) return publicDir
+        fun resolveInternalWorkspacesDir(context: Context): File {
+            val dir = File(context.filesDir, "rootfs/tmp/gemini_app/workspaces")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
 
-            return File(context.filesDir, "rootfs/tmp/gemini_app/workspaces").apply {
-                if (!exists()) mkdirs()
+        fun resolveRealProjectDirectory(context: Context, sanitizedName: String): File {
+            val mainDirCandidate = File(Environment.getExternalStorageDirectory(), sanitizedName)
+            if (mainDirCandidate.exists()) return mainDirCandidate
+            val downloadsCandidate = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "Antigravity/workspaces/$sanitizedName"
+            )
+            if (downloadsCandidate.exists()) return downloadsCandidate
+            val parent = resolveWorkspacesRoot(context)
+            return File(parent, sanitizedName)
+        }
+
+        fun createAndLinkProjectFolder(context: Context, sanitizedName: String): File {
+            val parent = resolveWorkspacesRoot(context)
+            val realTarget = File(parent, sanitizedName)
+            if (!realTarget.exists()) realTarget.mkdirs()
+
+            val internalDir = resolveInternalWorkspacesDir(context)
+            val linkFile = File(internalDir, sanitizedName)
+            val externalRootPath = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+            val guestTargetPath = if (realTarget.absolutePath.startsWith("$externalRootPath/")) {
+                val rel = realTarget.absolutePath.removePrefix("$externalRootPath/").trimStart('/')
+                "/tmp/gemini_app/storage/$rel"
+            } else {
+                null
+            }
+            if (guestTargetPath != null) {
+                try {
+                    if (linkFile.exists() || runCatching { android.system.Os.lstat(linkFile.absolutePath) }.isSuccess) {
+                        linkFile.deleteRecursively()
+                    }
+                    android.system.Os.symlink(guestTargetPath, linkFile.absolutePath)
+                } catch (_: Exception) {
+                    if (!linkFile.exists()) linkFile.mkdirs()
+                }
+            } else if (!linkFile.exists()) {
+                linkFile.mkdirs()
+            }
+            return realTarget
+        }
+
+        fun listLinkedWorkspaceFolders(context: Context): List<Pair<String, String>> {
+            val internalDir = resolveInternalWorkspacesDir(context)
+            val externalRoot = Environment.getExternalStorageDirectory()
+            val results = mutableListOf<Pair<String, String>>()
+            val entries = internalDir.listFiles() ?: return results
+            for (entry in entries.sortedBy { it.name.lowercase() }) {
+                val linkTarget = runCatching { android.system.Os.readlink(entry.absolutePath) }.getOrNull()
+                val backingExists = when {
+                    linkTarget != null && linkTarget.startsWith("/tmp/gemini_app/storage/") -> {
+                        val rel = linkTarget.removePrefix("/tmp/gemini_app/storage/").trimStart('/')
+                        File(externalRoot, rel).isDirectory
+                    }
+                    linkTarget != null -> entry.isDirectory
+                    else -> entry.isDirectory
+                }
+                if (backingExists) {
+                    results.add(entry.name to "/tmp/gemini_app/workspaces/${entry.name}")
+                }
+            }
+            return results
+        }
+
+        fun resolveHostPathForWorkspaceUri(context: Context, targetPath: String): File {
+            val root = resolveWorkspacesRoot(context)
+            val normalized = targetPath.removePrefix("file://").trim()
+            val externalRoot = Environment.getExternalStorageDirectory()
+            return when {
+                normalized.startsWith("/tmp/gemini_app/storage/") -> {
+                    val rel = normalized.removePrefix("/tmp/gemini_app/storage/").trimStart('/')
+                    File(externalRoot, rel)
+                }
+                normalized.startsWith("/tmp/gemini_app/workspaces/") -> {
+                    val rel = normalized.removePrefix("/tmp/gemini_app/workspaces/").trimStart('/')
+                    val parts = rel.split('/', limit = 2)
+                    val projectName = parts.firstOrNull().orEmpty()
+                    val subPath = if (parts.size > 1) parts[1] else ""
+                    val internalEntry = File(resolveInternalWorkspacesDir(context), projectName)
+                    val linkTarget = runCatching { android.system.Os.readlink(internalEntry.absolutePath) }.getOrNull()
+                    val projectDir = when {
+                        linkTarget != null && linkTarget.startsWith("/tmp/gemini_app/storage/") -> {
+                            File(externalRoot, linkTarget.removePrefix("/tmp/gemini_app/storage/").trimStart('/'))
+                        }
+                        else -> resolveRealProjectDirectory(context, projectName)
+                    }
+                    if (subPath.isNotEmpty()) File(projectDir, subPath) else projectDir
+                }
+                normalized == "/tmp/gemini_app/workspaces" -> root
+                normalized.startsWith(root.absolutePath) -> File(normalized)
+                else -> resolveRealProjectDirectory(context, File(normalized).name)
             }
         }
 
         fun documentIdForPath(context: Context, targetPath: String): String {
             val root = resolveWorkspacesRoot(context)
-            val normalized = targetPath.removePrefix("file://").trim()
-            val candidate = when {
-                normalized.startsWith("/tmp/gemini_app/workspaces/") -> {
-                    val rel = normalized.removePrefix("/tmp/gemini_app/workspaces/").trimStart('/')
-                    File(root, rel)
-                }
-                normalized == "/tmp/gemini_app/workspaces" -> root
-                normalized.startsWith(root.absolutePath) -> File(normalized)
-                else -> File(root, File(normalized).name)
-            }
+            val candidate = resolveHostPathForWorkspaceUri(context, targetPath)
             if (!candidate.exists() && candidate.parentFile?.exists() == true) {
                 candidate.mkdirs()
             }

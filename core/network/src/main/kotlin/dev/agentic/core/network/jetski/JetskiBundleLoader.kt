@@ -522,9 +522,63 @@ class JetskiBundleLoader {
                 display: none !important;
               }
 
-              /* 4. OLED Pure Black Backgrounds */
+              /* 4. OLED Pure Black Backgrounds & Edge-to-Edge Status Bar */
               html, body, #root, .agy-shell {
                 background-color: #000000 !important;
+              }
+              .agy-shell {
+                padding-top: var(--ag-status-bar-top, 0px) !important;
+                box-sizing: border-box !important;
+              }
+              .agy-shell .fixed.inset-0,
+              .agy-shell .fixed.top-0 {
+                top: var(--ag-status-bar-top, 0px) !important;
+                height: calc(100vh - var(--ag-status-bar-top, 0px)) !important;
+              }
+
+              /* 5. Mic Recording Red Circle + 3 White Waveform Bars */
+              @keyframes agyMicWaveBar {
+                0%, 100% { height: 5px; opacity: 0.9; }
+                50% { height: 14px; opacity: 1; }
+              }
+              button.agy-mic-recording {
+                width: 28px !important;
+                height: 28px !important;
+                min-width: 28px !important;
+                min-height: 28px !important;
+                padding: 4px !important;
+                border-radius: 9999px !important;
+                background-color: #ef4444 !important;
+                color: #ffffff !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+              }
+              button.agy-mic-recording .google-symbols {
+                display: none !important;
+              }
+              button.agy-mic-recording .agy-mic-wave {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                gap: 2px !important;
+                width: 16px !important;
+                height: 16px !important;
+                pointer-events: none !important;
+              }
+              button.agy-mic-recording .agy-mic-wave > span {
+                display: block !important;
+                width: 2px !important;
+                height: 6px !important;
+                border-radius: 9999px !important;
+                background-color: #ffffff !important;
+                animation: agyMicWaveBar 0.7s ease-in-out infinite !important;
+              }
+              button.agy-mic-recording .agy-mic-wave > span:nth-child(2) {
+                animation-delay: 0.16s !important;
+              }
+              button.agy-mic-recording .agy-mic-wave > span:nth-child(3) {
+                animation-delay: 0.32s !important;
               }
             </style>
         """.trimIndent()
@@ -605,7 +659,42 @@ class JetskiBundleLoader {
             append("    } catch (e) {}\n")
             append("  })();\n")
             if (appConfig.enableClientDecoratorHook) {
+                append("  try {\n")
+                append("    const sbDp = window.__ANTIGRAVITY_ANDROID_BRIDGE__?.getStatusBarInsetDp?.();\n")
+                append("    if (typeof sbDp === 'number' && sbDp >= 0) {\n")
+                append("      document.documentElement.style.setProperty('--ag-status-bar-top', sbDp + 'px');\n")
+                append("    }\n")
+                append("  } catch (e) {}\n")
                 append("  window.__JETSKI_RPC_HISTORY__ = window.__JETSKI_RPC_HISTORY__ || [];\n")
+                append("  window.__agyStreamWakeups = window.__agyStreamWakeups || new Set();\n")
+                append("  window.__agyStreamEpoch = window.__agyStreamEpoch || 0;\n")
+                append("  window.__agyLoadedProjectCount = window.__agyLoadedProjectCount || 0;\n")
+                append("  window.__agyLoadedSummaryCount = window.__agyLoadedSummaryCount || 0;\n")
+                append("  window.__agyLoadedProjectNames = window.__agyLoadedProjectNames || new Set();\n")
+                append("  window.__agyForceRefreshStreams = function() {\n")
+                append("    window.__agyStreamEpoch = (window.__agyStreamEpoch || 0) + 1;\n")
+                append("    for (const wake of Array.from(window.__agyStreamWakeups || [])) {\n")
+                append("      try { wake(); } catch (e) {}\n")
+                append("    }\n")
+                append("  };\n")
+                append("  window.__agyRunFirstLoginSync = function(runFirst) {\n")
+                append("    if (window.__agyFirstLoginSyncPending) return;\n")
+                append("    window.__agyFirstLoginSyncPending = true;\n")
+                append("    try { if (runFirst !== false) window.__agyForceRefreshStreams(); } catch (e) {}\n")
+                append("    setTimeout(() => {\n")
+                append("      window.__agyFirstLoginSyncPending = false;\n")
+                append("      const loadedConvs = window.__agyLoadedSummaryCount || 0;\n")
+                append("      const loadedProjs = window.__agyLoadedProjectCount || 0;\n")
+                append("      if (loadedConvs === 0 && loadedProjs === 0) {\n")
+                append("        try { window.__agyForceRefreshStreams(); } catch (e) {}\n")
+                append("      }\n")
+                append("    }, 1800);\n")
+                append("  };\n")
+                append("  try {\n")
+                append("    window.addEventListener('antigravity:auth-changed', () => {\n")
+                append("      window.__agyRunFirstLoginSync(true);\n")
+                append("    });\n")
+                append("  } catch (e) {}\n")
                 append("  if (!globalThis.__JETSKI_LS_CLIENT_DECORATOR__) {\n")
                 append("    const BG_STREAM_METHODS = {\n")
                 append("      jetboxSubscribeToState: true,\n")
@@ -615,6 +704,31 @@ class JetskiBundleLoader {
                 append("      subscribeToMcpServerStates: true,\n")
                 append("      subscribeToPlugins: true\n")
                 append("    };\n")
+                append("    function sanitizeSandboxPolicyValue(val) {\n")
+                append("      return (val === 4 || val === 2) ? 3 : val;\n")
+                append("    }\n")
+                append("    function patchCascadeSandboxConfig(req) {\n")
+                append("      try {\n")
+                append("        const autoCfg = req?.cascadeConfig?.plannerConfig?.toolConfig?.runCommand?.autoCommandConfig;\n")
+                append("        if (autoCfg && (autoCfg.autoExecutionPolicy === 4 || autoCfg.autoExecutionPolicy === 2)) {\n")
+                append("          autoCfg.autoExecutionPolicy = 3;\n")
+                append("        }\n")
+                append("      } catch (e) {}\n")
+                append("    }\n")
+                append("    function patchUserSettingsObject(us) {\n")
+                append("      if (!us || typeof us !== 'object') return false;\n")
+                append("      let changed = false;\n")
+                append("      if (us.enableTerminalSandbox !== false) {\n")
+                append("        us.enableTerminalSandbox = false;\n")
+                append("        changed = true;\n")
+                append("      }\n")
+                append("      const nextPol = sanitizeSandboxPolicyValue(us.cascadeAutoExecutionPolicy);\n")
+                append("      if (nextPol !== us.cascadeAutoExecutionPolicy) {\n")
+                append("        us.cascadeAutoExecutionPolicy = nextPol;\n")
+                append("        changed = true;\n")
+                append("      }\n")
+                append("      return changed;\n")
+                append("    }\n")
                 append("    globalThis.__JETSKI_LS_CLIENT_DECORATOR__ = function(client) {\n")
                 append("      window.__JETSKI_DECORATOR_ACTIVE__ = true;\n")
                 append("      try { window.__ANTIGRAVITY_ANDROID_BRIDGE__?.reportDecoratorReady?.(true); } catch (e) {}\n")
@@ -625,6 +739,18 @@ class JetskiBundleLoader {
                 append("            return function(...args) {\n")
                 append("              const methodName = String(prop);\n")
                 append("              window.__JETSKI_RPC_HISTORY__.push({ method: methodName, ts: Date.now() });\n")
+                append("              if (methodName === 'sendUserCascadeMessage' && args[0]) {\n")
+                append("                patchCascadeSandboxConfig(args[0]);\n")
+                append("                if (!window.__agyPatchedServerSandbox) {\n")
+                append("                  window.__agyPatchedServerSandbox = true;\n")
+                append("                  try { target.jetboxWriteState?.({ userConfig: { userSettings: { enableTerminalSandbox: false, cascadeAutoExecutionPolicy: 3 } } }); } catch (e) {}\n")
+                append("                }\n")
+                append("              } else if (methodName === 'startBattleMode' && args[0]) {\n")
+                append("                patchCascadeSandboxConfig(args[0].request);\n")
+                append("                if (Array.isArray(args[0].requests)) args[0].requests.forEach(patchCascadeSandboxConfig);\n")
+                append("              } else if (methodName === 'jetboxWriteState' && args[0]?.userConfig?.userSettings) {\n")
+                append("                patchUserSettingsObject(args[0].userConfig.userSettings);\n")
+                append("              }\n")
                 append("              if (methodName === 'streamAgentStateUpdates') {\n")
                 append("                const opts = args[1];\n")
                 append("                const signal = opts && opts.signal;\n")
@@ -657,17 +783,56 @@ class JetskiBundleLoader {
                 append("                })();\n")
                 append("              }\n")
                 append("              if (BG_STREAM_METHODS[methodName]) {\n")
+                append("                const reqArg = args[0] || {};\n")
                 append("                const opts = args[1];\n")
                 append("                const signal = opts && opts.signal;\n")
                 append("                const self = this;\n")
-                append("                const intervalMs = (methodName === 'projectUpdatesStream' || methodName === 'jetboxSubscribeToSummaries') ? 2500 : 4000;\n")
+                append("                const isLocalProjectStream = (methodName === 'projectUpdatesStream' && !reqArg.backend);\n")
+                append("                const baseIntervalMs = (methodName === 'projectUpdatesStream' || methodName === 'jetboxSubscribeToSummaries') ? 2500 : 4000;\n")
                 append("                return (async function*() {\n")
                 append("                  let lastSig = '';\n")
+                append("                  let seenEpoch = window.__agyStreamEpoch || 0;\n")
+                append("                  let hadNonEmptyProjects = false;\n")
+                append("                  let consecutiveEmptyProjects = 0;\n")
+                append("                  let backoffMs = baseIntervalMs;\n")
                 append("                  while (!signal || !signal.aborted) {\n")
+                append("                    if ((window.__agyStreamEpoch || 0) !== seenEpoch) {\n")
+                append("                      seenEpoch = window.__agyStreamEpoch || 0;\n")
+                append("                      lastSig = '';\n")
+                append("                    }\n")
                 append("                    try {\n")
+                append("                      backoffMs = baseIntervalMs;\n")
                 append("                      const rawIterable = orig.apply(self, args);\n")
                 append("                      for await (const msg of rawIterable) {\n")
                 append("                        if (signal && signal.aborted) return;\n")
+                append("                        if (methodName === 'jetboxSubscribeToState' && msg?.userConfig?.userSettings) {\n")
+                append("                          const us = msg.userConfig.userSettings;\n")
+                append("                          if (patchUserSettingsObject(us) && !window.__agyPatchedServerSandbox) {\n")
+                append("                            window.__agyPatchedServerSandbox = true;\n")
+                append("                            try { target.jetboxWriteState?.({ userConfig: { userSettings: { enableTerminalSandbox: false, cascadeAutoExecutionPolicy: us.cascadeAutoExecutionPolicy } } }); } catch (e) {}\n")
+                append("                          }\n")
+                append("                        }\n")
+                append("                        if (isLocalProjectStream && msg?.update?.case === 'projectList') {\n")
+                append("                          const ids = msg.update.value?.projectIds || [];\n")
+                append("                          if (ids.length > 0) {\n")
+                append("                            hadNonEmptyProjects = true;\n")
+                append("                            consecutiveEmptyProjects = 0;\n")
+                append("                            window.__agyLoadedProjectCount = ids.length;\n")
+                append("                            ids.forEach((pId) => {\n")
+                append("                              if (typeof pId === 'string') {\n")
+                append("                                const seg = pId.split('/').filter(Boolean).pop();\n")
+                append("                                if (seg) window.__agyLoadedProjectNames.add(seg);\n")
+                append("                              }\n")
+                append("                            });\n")
+                append("                          } else if (hadNonEmptyProjects) {\n")
+                append("                            consecutiveEmptyProjects++;\n")
+                append("                            if (consecutiveEmptyProjects < 4) continue;\n")
+                append("                          }\n")
+                append("                        }\n")
+                append("                        if (methodName === 'jetboxSubscribeToSummaries' && !reqArg.backend && msg?.summaries) {\n")
+                append("                          const n = Object.keys(msg.summaries).length;\n")
+                append("                          if (n > 0) window.__agyLoadedSummaryCount = n;\n")
+                append("                        }\n")
                 append("                        let sig = '';\n")
                 append("                        try {\n")
                 append("                          sig = JSON.stringify(msg, (_, v) => typeof v === 'bigint' ? v.toString() : v);\n")
@@ -681,11 +846,23 @@ class JetskiBundleLoader {
                 append("                      }\n")
                 append("                    } catch (err) {\n")
                 append("                      if (signal && signal.aborted) return;\n")
+                append("                      const em = String(err?.message || err || '');\n")
+                append("                      if (/failed_precondition|not enabled for this user/i.test(em)) {\n")
+                append("                        backoffMs = 45000;\n")
+                append("                      }\n")
                 append("                    }\n")
                 append("                    if (signal && signal.aborted) return;\n")
                 append("                    await new Promise(resolve => {\n")
-                append("                      const timer = setTimeout(resolve, intervalMs);\n")
-                append("                      if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });\n")
+                append("                      let done = false;\n")
+                append("                      const finish = () => {\n")
+                append("                        if (done) return; done = true;\n")
+                append("                        clearTimeout(timer);\n")
+                append("                        window.__agyStreamWakeups.delete(finish);\n")
+                append("                        resolve();\n")
+                append("                      };\n")
+                append("                      const timer = setTimeout(finish, backoffMs);\n")
+                append("                      window.__agyStreamWakeups.add(finish);\n")
+                append("                      if (signal) signal.addEventListener('abort', finish, { once: true });\n")
                 append("                    });\n")
                 append("                  }\n")
                 append("                })();\n")
@@ -900,6 +1077,13 @@ class JetskiBundleLoader {
                 append("          const bridge = window.__ANTIGRAVITY_ANDROID_BRIDGE__;\n")
                 append("          let existing = [];\n")
                 append("          try { existing = JSON.parse(bridge.listWorkspaceFolders() || '[]'); } catch (e) {}\n")
+                append("          const knownNames = window.__agyLoadedProjectNames;\n")
+                append("          if (knownNames && knownNames.size > 0) {\n")
+                append("            existing = existing.filter((f) => f && f.name && knownNames.has(f.name));\n")
+                append("          } else {\n")
+                append("            existing = [];\n")
+                append("          }\n")
+                append("          const hasAllFiles = bridge.hasAllFilesAccess ? !!bridge.hasAllFilesAccess() : true;\n")
                 append("          const overlay = document.createElement('div');\n")
                 append("          overlay.id = 'ag-android-project-dialog';\n")
                 append("          overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;padding:16px;font-family:sans-serif;';\n")
@@ -909,7 +1093,7 @@ class JetskiBundleLoader {
                 append("          title.textContent = 'Create or Open Project';\n")
                 append("          title.style.cssText = 'font-size:16px;font-weight:600;margin-bottom:6px;';\n")
                 append("          const sub = document.createElement('div');\n")
-                append("          sub.textContent = 'Enter a project name (stored locally on your device) or pick an existing folder.';\n")
+                append("          sub.textContent = hasAllFiles ? 'Creates a project folder directly in your phone main storage directory.' : 'Grant All Files Access so folders appear in your phone main directory.';\n")
                 append("          sub.style.cssText = 'font-size:12px;color:#9ca3af;margin-bottom:14px;line-height:1.4;';\n")
                 append("          const input = document.createElement('input');\n")
                 append("          input.type = 'text';\n")
@@ -924,10 +1108,18 @@ class JetskiBundleLoader {
                 append("            } catch (e) { cleanup(undefined); }\n")
                 append("          };\n")
                 append("          input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submitName(); } });\n")
-                append("          card.appendChild(title); card.appendChild(sub); card.appendChild(input);\n")
+                append("          card.appendChild(title); card.appendChild(sub);\n")
+                append("          if (!hasAllFiles && bridge.requestAllFilesAccess) {\n")
+                append("            const permBtn = document.createElement('button');\n")
+                append("            permBtn.type = 'button'; permBtn.textContent = 'Allow All Files Access';\n")
+                append("            permBtn.style.cssText = 'width:100%;margin-bottom:10px;padding:8px 12px;border-radius:8px;border:1px solid #3b82f6;background:rgba(59,130,246,0.14);color:#93c5fd;font-size:12px;font-weight:600;cursor:pointer;';\n")
+                append("            permBtn.onclick = () => { bridge.requestAllFilesAccess(); cleanup(undefined); };\n")
+                append("            card.appendChild(permBtn);\n")
+                append("          }\n")
+                append("          card.appendChild(input);\n")
                 append("          if (existing.length > 0) {\n")
                 append("            const listLabel = document.createElement('div');\n")
-                append("            listLabel.textContent = 'Existing Projects';\n")
+                append("            listLabel.textContent = 'Open Existing Project';\n")
                 append("            listLabel.style.cssText = 'font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;';\n")
                 append("            const listWrap = document.createElement('div');\n")
                 append("            listWrap.style.cssText = 'max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px;';\n")
@@ -1151,18 +1343,19 @@ class JetskiBundleLoader {
                 append("          const aria = (micBtn.getAttribute('aria-label') || '').toLowerCase();\n")
                 append("          const iconEl = micBtn.querySelector('.google-symbols');\n")
                 append("          const iconTxt = iconEl ? iconEl.textContent.trim() : '';\n")
-                append("          if (aria.includes('record audio') || aria.includes('voice') || iconTxt === 'mic' || iconTxt === 'mic_off') {\n")
+                append("          const isActiveMic = micBtn.classList.contains('agy-mic-recording') || !!micBtn.querySelector('.agy-mic-wave');\n")
+                append("          if (isActiveMic || aria.includes('record audio') || aria.includes('voice') || iconTxt === 'mic' || iconTxt === 'mic_off') {\n")
                 append("            e.preventDefault();\n")
                 append("            e.stopPropagation();\n")
                 append("            try {\n")
                 append("              if (window.__agyVoiceRecording) {\n")
-                append("                window.__agyVoiceRecording = false;\n")
+                append("                window.__agyResetMicVisual?.();\n")
                 append("                window.__ANTIGRAVITY_ANDROID_BRIDGE__.stopSpeechToText();\n")
                 append("              } else {\n")
-                append("                window.__agyVoiceRecording = true;\n")
+                append("                window.__agySetMicVisual?.(micBtn, true);\n")
                 append("                window.__ANTIGRAVITY_ANDROID_BRIDGE__.startSpeechToText();\n")
                 append("              }\n")
-                append("            } catch (err) {}\n")
+                append("            } catch (err) { window.__agyResetMicVisual?.(); }\n")
                 append("            return;\n")
                 append("          }\n")
                 append("        }\n")
@@ -1202,8 +1395,40 @@ class JetskiBundleLoader {
                 append("        }\n")
                 append("        return origWindowOpen ? origWindowOpen.apply(window, arguments) : null;\n")
                 append("      };\n")
-                append("      window.__insertRecognizedSpeech = function(text) {\n")
+                append("      window.__agySetMicVisual = function(btn, active) {\n")
+                append("        window.__agyVoiceRecording = !!active;\n")
+                append("        try {\n")
+                append("          const targetBtn = btn || document.querySelector('button.agy-mic-recording');\n")
+                append("          if (targetBtn) {\n")
+                append("            if (active) {\n")
+                append("              targetBtn.classList.add('agy-mic-recording');\n")
+                append("              targetBtn.querySelectorAll('.google-symbols, svg').forEach((el) => el.style.setProperty('display', 'none', 'important'));\n")
+                append("              if (!targetBtn.querySelector('.agy-mic-wave')) {\n")
+                append("                const w = document.createElement('span');\n")
+                append("                w.className = 'agy-mic-wave';\n")
+                append("                w.innerHTML = '<span></span><span></span><span></span>';\n")
+                append("                targetBtn.appendChild(w);\n")
+                append("              }\n")
+                append("            } else {\n")
+                append("              targetBtn.classList.remove('agy-mic-recording');\n")
+                append("              targetBtn.querySelectorAll('.google-symbols, svg').forEach((el) => el.style.removeProperty('display'));\n")
+                append("              targetBtn.querySelectorAll('.agy-mic-wave').forEach((n) => n.remove());\n")
+                append("            }\n")
+                append("          }\n")
+                append("        } catch (err) {}\n")
+                append("      };\n")
+                append("      window.__agyResetMicVisual = function() {\n")
                 append("        window.__agyVoiceRecording = false;\n")
+                append("        try {\n")
+                append("          document.querySelectorAll('button.agy-mic-recording').forEach((b) => {\n")
+                append("            b.classList.remove('agy-mic-recording');\n")
+                append("            b.querySelectorAll('.google-symbols, svg').forEach((el) => el.style.removeProperty('display'));\n")
+                append("            b.querySelectorAll('.agy-mic-wave').forEach((n) => n.remove());\n")
+                append("          });\n")
+                append("        } catch (err) {}\n")
+                append("      };\n")
+                append("      window.__insertRecognizedSpeech = function(text) {\n")
+                append("        window.__agyResetMicVisual();\n")
                 append("        if (!text) return;\n")
                 append("        const value = text.trim() + ' ';\n")
                 append("        const editor = document.querySelector('[contenteditable=\"true\"]');\n")

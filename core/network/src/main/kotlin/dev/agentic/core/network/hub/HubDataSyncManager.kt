@@ -40,7 +40,9 @@ data class SyncSummary(
     val totalStepsCount: Int,
     val userName: String?,
     val userEmail: String?,
-    val planTier: String?
+    val planTier: String?,
+    val genuineProjectsCount: Int = 0,
+    val genuineConversationsCount: Int = 0
 )
 
 /**
@@ -95,14 +97,14 @@ class HubDataSyncManager(
      * Executes a full synchronization of user status, workspace projects, cascade trajectories,
      * message histories, skills, and customization metadata.
      */
-    suspend fun syncAll(): Result<SyncSummary> = withContext(Dispatchers.IO) {
+    suspend fun syncAll(force: Boolean = false): Result<SyncSummary> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
             val now = System.currentTimeMillis()
             val cached = lastSyncSummary
-            if (cached != null && (now - lastSyncedAtMs) < 3_000L) {
+            if (!force && cached != null && (now - lastSyncedAtMs) < 3_000L) {
                 return@withContext Result.success(cached)
             }
-            if (isLowBatteryDeferred && cached != null && (now - lastSyncedAtMs) < 60_000L) {
+            if (!force && isLowBatteryDeferred && cached != null && (now - lastSyncedAtMs) < 60_000L) {
                 Log.i(TAG, "Background sync deferred due to low battery (< 15%); returning cached summary.")
                 return@withContext Result.success(cached)
             }
@@ -144,13 +146,19 @@ class HubDataSyncManager(
                 _syncState.value = SyncState.Syncing("Syncing skills and MCP server states...")
                 syncSkillsAndCustomizations()
 
+                val genuineProjCount = projects.count { p ->
+                    p.id != "outside-of-project" &&
+                        dev.agentic.core.data.InMemoryProjectRepository.DEFAULT_PROJECTS.none { it.id == p.id }
+                }
                 val summary = SyncSummary(
                     projectsCount = projects.size,
                     conversationsCount = conversations.size,
                     totalStepsCount = totalSteps,
                     userName = userStatus?.userName,
                     userEmail = userStatus?.userEmail,
-                    planTier = userStatus?.teamsTier
+                    planTier = userStatus?.teamsTier,
+                    genuineProjectsCount = genuineProjCount,
+                    genuineConversationsCount = genuineConvIds.size
                 )
 
                 val summaryText = "Synced ${projects.size} projects, ${conversations.size} conversations ($totalSteps steps) for ${userStatus?.userName ?: "Authenticated User"}"

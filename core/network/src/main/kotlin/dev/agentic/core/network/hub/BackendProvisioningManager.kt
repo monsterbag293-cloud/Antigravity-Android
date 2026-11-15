@@ -42,6 +42,9 @@ class BackendProvisioningManager(private val context: Context) {
         const val BUFFER_SIZE = 64 * 1024
         const val CONNECT_TIMEOUT_MS = 15000
         const val READ_TIMEOUT_MS = 30000
+
+        const val PYTHON_STANDALONE_URL =
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
     }
 
     sealed class ProvisioningStatus {
@@ -89,6 +92,9 @@ class BackendProvisioningManager(private val context: Context) {
 
             // 1.2 Ensure static hosts and DNS configuration for unprivileged PRoot networking
             ensureDnsAndHostsConfiguration()
+
+            // 1.3 Ensure Python 3 ARM64 runtime is provisioned inside rootfs (non-fatal if offline)
+            ensurePythonProvisioned(onProgress)
 
             // 2. Check if destination binary is already intact
             if (backendBinary.exists() && backendBinary.length() == EXPECTED_BACKEND_SIZE) {
@@ -236,6 +242,9 @@ class BackendProvisioningManager(private val context: Context) {
         var totalBytesRead = 0L
         var entriesCount = 0
 
+        var nextLongName: String? = null
+        var nextLongLink: String? = null
+
         while (true) {
             var offset = 0
             while (offset < 512) {
@@ -259,13 +268,42 @@ class BackendProvisioningManager(private val context: Context) {
             // Parse POSIX UStar header fields
             val nameRaw = readNullTerminatedString(buffer, 0, 100)
             val prefixRaw = readNullTerminatedString(buffer, 345, 155)
-            val entryPath = if (prefixRaw.isNotBlank()) "$prefixRaw/$nameRaw" else nameRaw
-            if (entryPath.isBlank()) continue
+            val baseEntryPath = if (prefixRaw.isNotBlank()) "$prefixRaw/$nameRaw" else nameRaw
+            val entryPath = nextLongName ?: baseEntryPath
+            nextLongName = null
 
             val modeOctal = readOctal(buffer, 100, 8)
             val size = readOctal(buffer, 124, 12)
             val typeFlag = buffer[156].toInt().toChar()
-            val linkName = readNullTerminatedString(buffer, 157, 100)
+            val linkRaw = readNullTerminatedString(buffer, 157, 100)
+            val linkName = nextLongLink ?: linkRaw
+            nextLongLink = null
+
+            if (typeFlag == 'L' || typeFlag == 'K' || typeFlag == 'x' || typeFlag == 'g') {
+                val metaBytes = ByteArray(size.toInt().coerceAtLeast(0))
+                var mOff = 0
+                while (mOff < metaBytes.size) {
+                    val r = tarStream.read(metaBytes, mOff, metaBytes.size - mOff)
+                    if (r < 0) break
+                    mOff += r
+                }
+                val rem = (size % 512).toInt()
+                if (rem != 0) {
+                    val skip = 512 - rem
+                    var s = 0
+                    while (s < skip) {
+                        val r = tarStream.read(buffer, 0, skip - s)
+                        if (r < 0) break
+                        s += r
+                    }
+                }
+                val metaText = String(metaBytes, Charsets.UTF_8).trimEnd('\u0000', '\n', '\r')
+                if (typeFlag == 'L') nextLongName = metaText
+                else if (typeFlag == 'K') nextLongLink = metaText
+                continue
+            }
+
+            if (entryPath.isBlank()) continue
 
             val cleanRelativePath = entryPath.removePrefix("./").trim('/')
             if (cleanRelativePath.isBlank()) continue
@@ -523,5 +561,112 @@ class BackendProvisioningManager(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to provision rootfs DNS/hosts config: ${e.message}")
         }
+    }
+
+    /**
+     * Provisions a standalone ARM64 CPython 3.12 runtime inside `rootfs/usr/local/python` and links
+     * `/usr/bin/python3`, `/usr/bin/python`, and `/usr/bin/pip3` so AI code execution works seamlessly.
+     */
+    fun ensurePythonProvisioned(onProgress: ((ProvisioningStatus.Progress) -> Unit)? = null) {
+        val pythonInstallDir = File(rootfsDir, "usr/local/python")
+        val pythonExec = File(pythonInstallDir, "bin/python3")
+        val usrBinPython3 = File(rootfsDir, "usr/bin/python3")
+        val usrBinPython = File(rootfsDir, "usr/bin/python")
+        if (pythonExec.exists() && usrBinPython3.exists() && usrBinPython.exists()) {
+            return
+        }
+
+        val tempArchive = File(context.cacheDir, "python-standalone.tar.gz.tmp")
+        try {
+            if (!pythonExec.exists()) {
+                onProgress?.invoke(
+                    ProvisioningStatus.Progress("Python", 20, "Installing Python 3.12 runtime for code execution...")
+                )
+                File(rootfsDir, "usr/local").mkdirs()
+                downloadWithRedirects(PYTHON_STANDALONE_URL, tempArchive) { pct ->
+                    onProgress?.invoke(
+                        ProvisioningStatus.Progress("Python", 20 + (pct / 2), "Downloading Python 3.12 runtime: $pct%")
+                    )
+                }
+                onProgress?.invoke(
+                    ProvisioningStatus.Progress("Python", 75, "Extracting Python 3.12 runtime...")
+                )
+                tempArchive.inputStream().use { fis ->
+                    GZIPInputStream(fis, BUFFER_SIZE).use { gzis ->
+                        extractTarArchive(gzis, File(rootfsDir, "usr/local"))
+                    }
+                }
+            }
+
+            if (pythonExec.exists()) {
+                pythonExec.setExecutable(true, false)
+                File(pythonInstallDir, "bin").listFiles()?.forEach { it.setExecutable(true, false) }
+                val usrBinDir = File(rootfsDir, "usr/bin").apply { mkdirs() }
+                createPosixSymlink("/usr/local/python/bin/python3", File(usrBinDir, "python3"))
+                createPosixSymlink("/usr/local/python/bin/python3", File(usrBinDir, "python"))
+                val pipBin = File(pythonInstallDir, "bin/pip3")
+                if (pipBin.exists()) {
+                    createPosixSymlink("/usr/local/python/bin/pip3", File(usrBinDir, "pip3"))
+                }
+                Log.i(TAG, "Provisioned standalone Python 3.12 runtime at ${pythonExec.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Python 3.12 provisioning failed (non-fatal): ${e.message}")
+        } finally {
+            if (tempArchive.exists()) tempArchive.delete()
+        }
+    }
+
+    private fun createPosixSymlink(target: String, linkFile: File) {
+        try {
+            if (linkFile.exists()) linkFile.delete()
+            Os.symlink(target, linkFile.absolutePath)
+        } catch (e: Exception) {
+            Log.w(TAG, "Symlink failed for ${linkFile.name} -> $target: ${e.message}; writing exec wrapper")
+            linkFile.writeText("#!/bin/sh\nexec $target \"\$@\"\n")
+            linkFile.setExecutable(true, false)
+        }
+    }
+
+    private fun downloadWithRedirects(rawUrl: String, destFile: File, onProgress: ((Int) -> Unit)? = null) {
+        var currentUrl = rawUrl
+        for (hop in 0..6) {
+            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                setRequestProperty("User-Agent", "AntigravityAndroidPort/3.7")
+            }
+            val code = conn.responseCode
+            if (code in listOf(301, 302, 303, 307, 308)) {
+                val loc = conn.getHeaderField("Location") ?: throw IOException("Redirect without Location ($code)")
+                conn.disconnect()
+                currentUrl = URL(URL(currentUrl), loc).toString()
+                continue
+            }
+            if (code != 200) {
+                conn.disconnect()
+                throw IOException("HTTP $code downloading $currentUrl")
+            }
+            val total = conn.contentLengthLong
+            var readTotal = 0L
+            destFile.parentFile?.mkdirs()
+            conn.inputStream.use { inp ->
+                FileOutputStream(destFile).use { out ->
+                    val buf = ByteArray(BUFFER_SIZE)
+                    var n: Int
+                    while (inp.read(buf).also { n = it } != -1) {
+                        out.write(buf, 0, n)
+                        readTotal += n
+                        if (total > 0) {
+                            onProgress?.invoke(((readTotal * 100) / total).toInt().coerceIn(0, 100))
+                        }
+                    }
+                }
+            }
+            conn.disconnect()
+            return
+        }
+        throw IOException("Too many redirects downloading $rawUrl")
     }
 }

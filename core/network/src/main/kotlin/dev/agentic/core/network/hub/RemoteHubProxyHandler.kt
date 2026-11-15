@@ -144,7 +144,7 @@ class RemoteHubProxyHandler(
                 )
             } else if (isStreaming) {
                 val streamingClient = client.newBuilder()
-                    .readTimeout(3000, TimeUnit.MILLISECONDS)
+                    .readTimeout(4500, TimeUnit.MILLISECONDS)
                     .build()
                 val call = streamingClient.newCall(requestBuilder.build())
                 val response = call.execute()
@@ -360,9 +360,9 @@ class RemoteHubProxyHandler(
             while (!readerDone.get()) {
                 delay(15)
                 val now = System.currentTimeMillis()
-                val quietExceeded = hasFirstFrame.get() && (now - lastFrameAtMs.get() >= 40L)
-                val initialExceeded = !hasFirstFrame.get() && (now - startMs >= 250L)
-                val maxExceeded = (now - startMs >= 1000L)
+                val quietExceeded = hasFirstFrame.get() && (now - lastFrameAtMs.get() >= 80L)
+                val initialExceeded = !hasFirstFrame.get() && (now - startMs >= 900L)
+                val maxExceeded = (now - startMs >= 2200L)
                 if (quietExceeded || initialExceeded || maxExceeded) {
                     call.cancel()
                     break
