@@ -138,6 +138,27 @@ fun JetskiWebViewHost(
     var pendingFilePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     var pendingPermissionRequest by remember { mutableStateOf<PermissionRequest?>(null) }
 
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        val guestPath = if (treeUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            dev.agentic.workspace.provider.AntigravityDocumentsProvider.importExistingFolderFromTreeUri(
+                context,
+                treeUri
+            )
+        } else {
+            null
+        }
+        val quoted = if (guestPath != null) JSONObject.quote(guestPath) else "null"
+        webViewRef?.evaluateJavascript("window.__resolveAndroidFolderPicker?.($quoted);", null)
+    }
+
     val fileChooserLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -297,6 +318,18 @@ fun JetskiWebViewHost(
                             sanitized
                         )
                         return "/tmp/gemini_app/workspaces/$sanitized"
+                    }
+
+                    @JavascriptInterface
+                    fun pickExistingFolder() {
+                        mainHandler.post {
+                            try {
+                                folderPickerLauncher.launch(null)
+                            } catch (e: Exception) {
+                                Log.w("JetskiWebViewHost", "pickExistingFolder failed: ${e.message}")
+                                webViewRef?.evaluateJavascript("window.__resolveAndroidFolderPicker?.(null);", null)
+                            }
+                        }
                     }
 
                     @JavascriptInterface

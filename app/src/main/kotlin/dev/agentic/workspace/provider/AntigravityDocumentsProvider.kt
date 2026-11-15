@@ -119,6 +119,111 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
             return realTarget
         }
 
+        fun importExistingFolderFromTreeUri(context: Context, treeUri: android.net.Uri): String? {
+            val treeDocId = runCatching {
+                android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+            }.getOrNull() ?: return null
+
+            val internalDir = resolveInternalWorkspacesDir(context)
+            fun sanitizeName(raw: String): String = raw.trim()
+                .replace(Regex("[/\\:*?\"<>|]+"), "-")
+                .trim('.', ' ')
+                .ifEmpty { "imported-project" }
+
+            fun resolveLinkName(baseName: String, desiredTarget: String?): String {
+                var candidate = baseName
+                var suffix = 2
+                while (true) {
+                    val existing = File(internalDir, candidate)
+                    val existingTarget = runCatching { android.system.Os.readlink(existing.absolutePath) }.getOrNull()
+                    if (desiredTarget != null && existingTarget == desiredTarget) {
+                        return candidate
+                    }
+                    if (!existing.exists() && existingTarget == null) {
+                        return candidate
+                    }
+                    candidate = "$baseName-$suffix"
+                    suffix++
+                }
+            }
+
+            if (treeUri.authority == "com.android.externalstorage.documents" && treeDocId.startsWith("primary:")) {
+                val rel = treeDocId.removePrefix("primary:").trimStart('/')
+                val externalRoot = Environment.getExternalStorageDirectory()
+                val realDir = if (rel.isEmpty()) externalRoot else File(externalRoot, rel)
+                if (realDir.exists() && realDir.isDirectory) {
+                    val guestTargetPath = if (rel.isEmpty()) "/tmp/gemini_app/storage" else "/tmp/gemini_app/storage/$rel"
+                    val baseName = sanitizeName(realDir.name.ifBlank { "storage" })
+                    val linkName = resolveLinkName(baseName, guestTargetPath)
+                    val linkFile = File(internalDir, linkName)
+                    val linkCreated = runCatching {
+                        if (linkFile.exists() || runCatching { android.system.Os.lstat(linkFile.absolutePath) }.isSuccess) {
+                            linkFile.deleteRecursively()
+                        }
+                        android.system.Os.symlink(guestTargetPath, linkFile.absolutePath)
+                        true
+                    }.getOrDefault(false)
+                    if (linkCreated) {
+                        return "/tmp/gemini_app/workspaces/$linkName"
+                    }
+                }
+            }
+
+            // Fallback: copy files from SAF tree URI into a newly linked workspace directory
+            val resolver = context.contentResolver
+            val rootDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            var displayName = treeDocId.substringAfterLast('/').substringAfterLast(':').ifBlank { "imported-project" }
+            resolver.query(rootDocUri, arrayOf(Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(Document.COLUMN_DISPLAY_NAME)
+                    if (idx >= 0 && !cursor.isNull(idx)) {
+                        displayName = cursor.getString(idx).orEmpty().ifBlank { displayName }
+                    }
+                }
+            }
+            val linkName = resolveLinkName(sanitizeName(displayName), null)
+            val destRoot = createAndLinkProjectFolder(context, linkName)
+
+            fun copyTree(parentDocId: String, destDir: File) {
+                if (!destDir.exists()) destDir.mkdirs()
+                val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+                resolver.query(
+                    childrenUri,
+                    arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    val idIdx = cursor.getColumnIndex(Document.COLUMN_DOCUMENT_ID)
+                    val nameIdx = cursor.getColumnIndex(Document.COLUMN_DISPLAY_NAME)
+                    val mimeIdx = cursor.getColumnIndex(Document.COLUMN_MIME_TYPE)
+                    while (cursor.moveToNext()) {
+                        val childId = if (idIdx >= 0) cursor.getString(idIdx) else null
+                        val childName = if (nameIdx >= 0) cursor.getString(nameIdx) else null
+                        val childMime = if (mimeIdx >= 0) cursor.getString(mimeIdx) else null
+                        if (childId.isNullOrBlank() || childName.isNullOrBlank()) continue
+                        val safeChildName = childName.replace('/', '_').replace('\\', '_')
+                        if (safeChildName == "." || safeChildName == "..") continue
+                        if (childMime == Document.MIME_TYPE_DIR) {
+                            copyTree(childId, File(destDir, safeChildName))
+                        } else {
+                            val childUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+                            runCatching {
+                                resolver.openInputStream(childUri)?.use { input ->
+                                    File(destDir, safeChildName).outputStream().use { output ->
+                                        input.copyTo(output)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            copyTree(treeDocId, destRoot)
+            return "/tmp/gemini_app/workspaces/$linkName"
+        }
+
         fun listLinkedWorkspaceFolders(context: Context): List<Pair<String, String>> {
             val internalDir = resolveInternalWorkspacesDir(context)
             val externalRoot = Environment.getExternalStorageDirectory()
