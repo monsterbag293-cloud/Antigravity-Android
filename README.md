@@ -30,7 +30,7 @@ An unofficial native Android port and mobile compatibility runtime for **Google 
 | Source | What you get | Recommended for |
 |--------|--------------|-----------------|
 | **[GitHub Releases](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)** | Versioned APKs + release notes + checksums | Most users |
-| **[Direct preview APK](dist/antigravity-android-preview.apk)** (~46.7 MB) | Current committed preview build | Quick testing |
+| **[Direct preview APK](dist/antigravity-android-preview.apk)** (~52.2 MB) | Current committed preview build | Quick testing |
 
 > Prefer the **Releases** page for the newest tagged builds and changelogs.
 
