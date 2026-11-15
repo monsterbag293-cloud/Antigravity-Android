@@ -504,17 +504,77 @@ class JetskiBundleLoader {
                 padding-left: 46px !important;
               }
 
-              /* 3. Mobile Settings Panel */
+              /* 3. Mobile Settings Panel & Dialog Boundaries */
               [role="menu"] {
                 max-width: calc(100vw - 16px) !important;
                 max-height: 75vh !important;
                 overflow-y: auto !important;
               }
-              div[role="dialog"]:not([data-testid="bottom-sheet"]) {
-                max-width: 100% !important;
+              .settings-modal-backdrop {
+                top: var(--ag-status-bar-top, 0px) !important;
+                right: 0 !important;
+                bottom: 0 !important;
+                left: 0 !important;
+                width: 100vw !important;
+                max-width: 100vw !important;
+                height: calc(100vh - var(--ag-status-bar-top, 0px)) !important;
+                max-height: calc(100vh - var(--ag-status-bar-top, 0px)) !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                box-sizing: border-box !important;
+              }
+              .settings-modal-container {
+                position: relative !important;
+                width: 100% !important;
+                max-width: 100vw !important;
+                height: 100% !important;
                 max-height: 100% !important;
                 border-radius: 0 !important;
-                inset: 0 !important;
+                border: none !important;
+                overflow: hidden !important;
+                box-sizing: border-box !important;
+              }
+              .settings-modal-container * {
+                box-sizing: border-box !important;
+              }
+              .settings-modal-container .flex,
+              .settings-modal-container .flex-1,
+              .settings-modal-container .flex-grow,
+              .settings-modal-container .grow {
+                min-width: 0 !important;
+              }
+              .settings-modal-container .overflow-auto {
+                overflow-x: hidden !important;
+                overflow-y: auto !important;
+                max-width: 100% !important;
+              }
+              .settings-modal-container .agy-card,
+              .settings-modal-container .agy-card > div {
+                max-width: 100% !important;
+                min-width: 0 !important;
+              }
+              .settings-modal-container span,
+              .settings-modal-container p,
+              .settings-modal-container a {
+                overflow-wrap: anywhere !important;
+              }
+              .settings-modal-container input,
+              .settings-modal-container textarea,
+              .settings-modal-container select,
+              .settings-modal-container pre,
+              .settings-modal-container code {
+                max-width: 100% !important;
+              }
+              .settings-modal-container > button[aria-label="Close"] {
+                top: 8px !important;
+                right: 12px !important;
+              }
+              div[role="dialog"]:not([data-testid="bottom-sheet"]):not(.settings-modal-container) {
+                max-width: calc(100vw - 24px) !important;
+                max-height: calc(100vh - var(--ag-status-bar-top, 0px) - 24px) !important;
+                overflow-y: auto !important;
+                overflow-x: hidden !important;
+                box-sizing: border-box !important;
               }
               /* Hide unsupported desktop shortcuts on Android */
               [data-screen="Shortcuts"],
@@ -530,6 +590,8 @@ class JetskiBundleLoader {
                 padding-top: var(--ag-status-bar-top, 0px) !important;
                 box-sizing: border-box !important;
               }
+              #root > .fixed.inset-0,
+              body > .fixed.inset-0,
               .agy-shell .fixed.inset-0,
               .agy-shell .fixed.top-0 {
                 top: var(--ag-status-bar-top, 0px) !important;
