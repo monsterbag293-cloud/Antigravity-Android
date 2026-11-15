@@ -143,16 +143,21 @@ class JetskiBundleLoader {
             if (text.contains(splitTarget)) {
                 text = text.replace(splitTarget, splitReplacement)
             }
-            val mobileTarget = """mobileLayout:{feature:{enabled:!1}"""
-            val mobileReplacement = """mobileLayout:{feature:{enabled:!0}"""
-            if (text.contains(mobileTarget)) {
-                text = text.replace(mobileTarget, mobileReplacement)
+            // Keep original desktop model menu, popups, welcome screen, and closable sidebar,
+            // while making the model thinking-level chevron always visible and independently tappable.
+            val submenuTriggerTarget = """A.createElement(DRa,{disabled:d,onClick:p=>{p.stopPropagation();c?.(p)},"""
+            val submenuTriggerReplacement = """A.createElement(DRa,{disabled:d,onClick:p=>{p.stopPropagation();if(p.target?.closest?.("[data-agy-submenu-arrow]")){p.preventDefault();return}c?.(p)},"""
+            if (text.contains(submenuTriggerTarget)) {
+                text = text.replace(submenuTriggerTarget, submenuTriggerReplacement)
             }
-            val touchTarget = """touchInput:{feature:{enabled:!1}"""
-            val touchReplacement = """touchInput:{feature:{enabled:!0}"""
-            if (text.contains(touchTarget)) {
-                text = text.replace(touchTarget, touchReplacement)
+            val chevronTarget = """A.createElement("span",{className:dj("flex shrink-0 pl-1 opacity-50",f&&dj("hidden group-hover:flex group-data-[highlighted]:flex",!l&&"group-focus:flex"))},A.createElement(lt,{name:"chevron_right",size:14}))"""
+            val chevronReplacement = """A.createElement("span",{"data-agy-submenu-arrow":"1",className:"flex shrink-0 items-center justify-center pl-2 pr-1 py-0.5 -mr-1 rounded opacity-70 hover:opacity-100"},A.createElement(lt,{name:"chevron_right",size:14}))"""
+            if (text.contains(chevronTarget)) {
+                text = text.replace(chevronTarget, chevronReplacement)
             }
+            text = text
+                .replace("This Computer", "This Device")
+                .replace("this computer", "this device")
             val patchedBytes = text.toByteArray(Charsets.UTF_8)
             cachedPatchedMainJs = patchedBytes
             return patchedBytes
@@ -500,6 +505,11 @@ class JetskiBundleLoader {
               }
 
               /* 3. Mobile Settings Panel */
+              [role="menu"] {
+                max-width: calc(100vw - 16px) !important;
+                max-height: 75vh !important;
+                overflow-y: auto !important;
+              }
               div[role="dialog"]:not([data-testid="bottom-sheet"]) {
                 max-width: 100% !important;
                 max-height: 100% !important;
@@ -560,6 +570,17 @@ class JetskiBundleLoader {
             append("          localStorage.removeItem(k);\n")
             append("        }\n")
             append("      }\n")
+            append("      localStorage.removeItem('sidebar_collapsed_sections');\n")
+            append("      try {\n")
+            append("        const rawHeaders = localStorage.getItem('sidebar_collapsed_section_headers');\n")
+            append("        if (rawHeaders) {\n")
+            append("          const parsed = JSON.parse(rawHeaders);\n")
+            append("          if (Array.isArray(parsed)) {\n")
+            append("            const next = parsed.filter((x) => x !== 'main-section-header' && x !== 'standalone');\n")
+            append("            localStorage.setItem('sidebar_collapsed_section_headers', JSON.stringify(next));\n")
+            append("          }\n")
+            append("        }\n")
+            append("      } catch (e) {}\n")
             append("      const origSetItem = Storage.prototype.setItem;\n")
             append("      Storage.prototype.setItem = function(key, value) {\n")
             append("        if (typeof key === 'string' && key.indexOf('antigravity-multi-conversation-layout') === 0) {\n")
@@ -849,7 +870,9 @@ class JetskiBundleLoader {
                 append("      const deepLinkListeners = new Set();\n")
                 append("      window.__dispatchDeepLink = function(url) {\n")
                 append("        if (!url) return;\n")
+                append("        window.__agyPendingAuthReturn = 0;\n")
                 append("        deepLinkListeners.forEach((cb) => { try { cb(url); } catch (e) {} });\n")
+                append("        try { window.dispatchEvent(new Event('focus')); } catch (e) {}\n")
                 append("      };\n")
                 append("      window.deepLink = {\n")
                 append("        onDeepLink: (cb) => { deepLinkListeners.add(cb); return () => { deepLinkListeners.delete(cb); }; },\n")
@@ -1078,14 +1101,27 @@ class JetskiBundleLoader {
                 append("      };\n")
                 append("      document.addEventListener('touchend', finishDrawerTouch, { capture: true, passive: true });\n")
                 append("      document.addEventListener('touchcancel', finishDrawerTouch, { capture: true, passive: true });\n")
-                append("      function syncMobileUiState() {\n")
-                append("        if (window.__agyPendingAuthReturn && (Date.now() - window.__agyPendingAuthReturn) < 300000) {\n")
-                append("          const sheetText = (document.querySelector('.agy-sheet')?.innerText || '');\n")
-                append("          if (location.pathname.includes('/customizations/plugins/') && !/Finish signing in/i.test(sheetText) && /Signed in|Sign out|Connected/i.test(sheetText)) {\n")
-                append("            window.__agyPendingAuthReturn = 0;\n")
-                append("            try { window.__ANTIGRAVITY_ANDROID_BRIDGE__?.bringToFront?.(); } catch (e) {}\n")
-                append("          }\n")
+                append("      function checkPendingAuthReturn() {\n")
+                append("        if (!window.__agyPendingAuthReturn || (Date.now() - window.__agyPendingAuthReturn) >= 300000) return;\n")
+                append("        if (!location.pathname.includes('/customizations')) return;\n")
+                append("        const localCard = document.querySelector('[data-testid=\"plugin-connection-local\"]');\n")
+                append("        const cloudCard = document.querySelector('[data-testid=\"plugin-connection-cloud\"]');\n")
+                append("        const scope = localCard || cloudCard || document.querySelector('.agy-sheet') || document.querySelector('main') || document.body;\n")
+                append("        const txt = (scope && scope.innerText) || '';\n")
+                append("        const hasDisconnectMenu = !!(scope && scope.querySelector('button[aria-label^=\"More for \"], button[aria-label^=\"Disconnect\"]'));\n")
+                append("        const hasConnectedText = !/Finish signing in|Not signed in|Not connected/i.test(txt) && /Account connected|Signed in|Disconnect/i.test(txt);\n")
+                append("        if (hasDisconnectMenu || hasConnectedText) {\n")
+                append("          window.__agyPendingAuthReturn = 0;\n")
+                append("          try { window.__ANTIGRAVITY_ANDROID_BRIDGE__?.bringToFront?.(); } catch (e) {}\n")
                 append("        }\n")
+                append("      }\n")
+                append("      setInterval(() => {\n")
+                append("        if (window.__agyPendingAuthReturn && (Date.now() - window.__agyPendingAuthReturn) < 300000) {\n")
+                append("          checkPendingAuthReturn();\n")
+                append("        }\n")
+                append("      }, 800);\n")
+                append("      function syncMobileUiState() {\n")
+                append("        checkPendingAuthReturn();\n")
                 append("        const sheet = document.querySelector('.agy-sheet');\n")
                 append("        if (sheet && sheet.scrollLeft !== 0) sheet.scrollLeft = 0;\n")
                 append("        const sb = document.querySelector('.agy-shell .flex-1 [data-testid=sidebar-split] > .flex:first-child');\n")
@@ -1157,7 +1193,7 @@ class JetskiBundleLoader {
                 append("      window.open = function(url) {\n")
                 append("        if (typeof url === 'string' && /^https?:\\/\\//i.test(url) && !url.startsWith(location.origin)) {\n")
                 append("          try {\n")
-                append("            if (/accounts\\.google\\.com|oauth|authorize|login/i.test(url)) {\n")
+                append("            if (location.pathname.includes('/customizations') || /accounts\\.google\\.com|oauth|authorize|login|signin|consent|auth/i.test(url)) {\n")
                 append("              window.__agyPendingAuthReturn = Date.now();\n")
                 append("            }\n")
                 append("            const b = window.__ANTIGRAVITY_ANDROID_BRIDGE__;\n")

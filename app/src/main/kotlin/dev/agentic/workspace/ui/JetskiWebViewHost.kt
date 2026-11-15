@@ -162,6 +162,7 @@ fun JetskiWebViewHost(
     }
 
     var pendingSpeechStart by remember { mutableStateOf(false) }
+    var awaitingExternalOAuth by remember { mutableStateOf(false) }
 
     val speechIntentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -362,6 +363,7 @@ fun JetskiWebViewHost(
                             val intent = Intent(Intent.ACTION_VIEW, uri).apply {
                                 val scheme = uri.scheme?.lowercase()
                                 if (scheme == "http" || scheme == "https") {
+                                    awaitingExternalOAuth = true
                                     // Launch as Chrome Custom Tab in the same task so OAuth returns cleanly to the app
                                     val bundle = android.os.Bundle().apply {
                                         putBinder("android.support.customtabs.extra.SESSION", null)
@@ -730,11 +732,12 @@ fun JetskiWebViewHost(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
+                    awaitingExternalOAuth = false
                     webView.onResume()
                     webView.resumeTimers()
                     // Re-query auth and state upon returning from external browser / auth flow
                     webView.evaluateJavascript(
-                        "(function(){ if(window.dispatchEvent){ window.dispatchEvent(new CustomEvent('antigravity:auth-changed')); } })();",
+                        "(function(){ if(window.dispatchEvent){ window.dispatchEvent(new Event('focus')); window.dispatchEvent(new CustomEvent('antigravity:auth-changed')); } })();",
                         null
                     )
                     if (remoteHostUrl != null || requestInterceptor.isHubConnected()) {
@@ -750,7 +753,7 @@ fun JetskiWebViewHost(
                         }, 350L)
                     }
                 }
-                Lifecycle.Event.ON_PAUSE -> webView.onPause()
+                Lifecycle.Event.ON_PAUSE -> if (!awaitingExternalOAuth) webView.onPause()
                 Lifecycle.Event.ON_DESTROY -> {
                     webView.stopLoading()
                     webView.destroy()
