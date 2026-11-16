@@ -321,6 +321,16 @@ fun JetskiWebViewHost(
                     }
 
                     @JavascriptInterface
+                    fun cacheZeroProjectSnapshot(cascadeId: String, summary: String, stepsResponseJson: String) {
+                        rpcHandler?.cacheZeroProjectSnapshot(cascadeId, summary, stepsResponseJson)
+                    }
+
+                    @JavascriptInterface
+                    fun markZeroProjectDeleted(cascadeId: String) {
+                        rpcHandler?.markZeroProjectDeleted(cascadeId)
+                    }
+
+                    @JavascriptInterface
                     fun pickExistingFolder() {
                         mainHandler.post {
                             try {

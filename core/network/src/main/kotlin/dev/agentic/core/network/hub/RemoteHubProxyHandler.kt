@@ -14,7 +14,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -39,7 +44,8 @@ import javax.net.ssl.SSLHandshakeException
  * 5. Supports streaming responses without buffering where required.
  */
 class RemoteHubProxyHandler(
-    val connectionManager: RemoteHubConnectionManager
+    val connectionManager: RemoteHubConnectionManager,
+    val conversationCache: ConversationCacheStore? = null
 ) {
     private val json = Json {
         ignoreUnknownKeys = true
@@ -103,11 +109,21 @@ class RemoteHubProxyHandler(
             requestBuilder.header(RemoteHubConnectionManager.HEADER_CONNECT_PROTOCOL, "1")
         }
 
+        val reqJson = parseRequestJsonOrNull(request.body)
+        val requestedCascadeId = reqJson?.get("cascadeId")?.jsonPrimitive?.content
+            ?: reqJson?.get("conversationId")?.jsonPrimitive?.content
+
         try {
+            if (request.path.endsWith("/DeleteCascadeTrajectory") || request.path.endsWith("/DeleteCascade")) {
+                requestedCascadeId?.takeIf { it.isNotBlank() }?.let { conversationCache?.markDeleted(it) }
+            }
+
             val isAudioStream = request.path.contains("StreamAudioTranscription", ignoreCase = true)
-            val isStreaming = isAudioStream || isStreamingRpc(request.path)
-            if (isAudioStream) {
-                // Persistent audio transcription stream: must NOT cancel call or apply short read timeouts
+            val isAgentStateStream = request.path.endsWith("/StreamAgentStateUpdates")
+            val isStreaming = isAudioStream || isAgentStateStream || isStreamingRpc(request.path)
+            if (isAudioStream || isAgentStateStream) {
+                // Persistent live stream for audio transcription & real-time Cascade token streaming:
+                // do not truncate with snapshot cancellation so thinking/text chunks appear live.
                 val liveStreamingClient = client.newBuilder()
                     .readTimeout(0, TimeUnit.MILLISECONDS)
                     .build()
@@ -124,6 +140,69 @@ class RemoteHubProxyHandler(
 
                 val respContentType = response.header("content-type") ?: GrpcWebFrameCodec.CONTENT_TYPE_GRPC_WEB_JSON
                 val rawStream = response.body?.byteStream() ?: java.io.ByteArrayInputStream(ByteArray(0))
+
+                if (isAgentStateStream && requestedCascadeId != null && conversationCache?.isTrackedZeroProject(requestedCascadeId) == true) {
+                    val isFramed = respContentType.contains("grpc-web", ignoreCase = true) ||
+                        respContentType.contains("connect+", ignoreCase = true)
+                    if (isFramed) {
+                        val header = ByteArray(5)
+                        if (readExact(rawStream, header, 5)) {
+                            val flags = header[0].toInt() and 0xFF
+                            val len = ((header[1].toInt() and 0xFF) shl 24) or
+                                ((header[2].toInt() and 0xFF) shl 16) or
+                                ((header[3].toInt() and 0xFF) shl 8) or
+                                (header[4].toInt() and 0xFF)
+                            val isTrailerFrame = (respContentType.contains("grpc-web", ignoreCase = true) && (flags and 0x80) != 0) ||
+                                (respContentType.contains("connect+", ignoreCase = true) && (flags and 0x02) != 0)
+                            if (len in 0..(16 * 1024 * 1024)) {
+                                val payload = ByteArray(len)
+                                if (readExact(rawStream, payload, len)) {
+                                    if (isTrailerFrame) {
+                                        val cachedSnapshot = conversationCache.getCachedStreamSnapshotResponse(requestedCascadeId)
+                                        if (cachedSnapshot != null) {
+                                            runCatching { response.close() }
+                                            runCatching { call.cancel() }
+                                            return@withContext GrpcWebHttpResponse(
+                                                statusCode = 200,
+                                                contentType = GrpcWebFrameCodec.CONTENT_TYPE_GRPC_WEB_JSON,
+                                                headers = mapOf(
+                                                    "Access-Control-Allow-Origin" to "*",
+                                                    "Cache-Control" to "no-cache"
+                                                ),
+                                                body = GrpcWebFrameCodec.encodeUnaryResponse(cachedSnapshot.toString())
+                                            )
+                                        }
+                                    }
+                                    val prefixBytes = ByteArray(5 + len)
+                                    System.arraycopy(header, 0, prefixBytes, 0, 5)
+                                    System.arraycopy(payload, 0, prefixBytes, 5, len)
+                                    val combined = java.io.SequenceInputStream(
+                                        java.io.ByteArrayInputStream(prefixBytes),
+                                        rawStream
+                                    )
+                                    val wrappedCombined = object : java.io.FilterInputStream(combined) {
+                                        override fun close() {
+                                            try {
+                                                super.close()
+                                            } finally {
+                                                response.close()
+                                                call.cancel()
+                                            }
+                                        }
+                                    }
+                                    return@withContext GrpcWebHttpResponse(
+                                        statusCode = response.code,
+                                        contentType = respContentType,
+                                        headers = responseHeaders,
+                                        body = ByteArray(0),
+                                        bodyStream = wrappedCombined
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 val wrappedStream = object : java.io.FilterInputStream(rawStream) {
                     override fun close() {
                         try {
@@ -176,11 +255,30 @@ class RemoteHubProxyHandler(
                     call.cancel()
                 }
 
+                val finalSnapshotBytes = if (
+                    response.isSuccessful &&
+                    request.path.endsWith("/JetboxSubscribeToSummaries") &&
+                    conversationCache != null
+                ) {
+                    transformUnaryJsonResponse(snapshotBytes, respContentType) { root ->
+                        val updates = root["updates"]?.jsonObject ?: return@transformUnaryJsonResponse null
+                        conversationCache.updateFromSummariesMap(updates)
+                        val merged = conversationCache.mergeIntoSummariesMap(updates)
+                        buildJsonObject {
+                            root.forEach { (k, v) ->
+                                if (k == "updates") put(k, merged) else put(k, v)
+                            }
+                        }
+                    }
+                } else {
+                    snapshotBytes
+                }
+
                 GrpcWebHttpResponse(
                     statusCode = response.code,
                     contentType = respContentType,
                     headers = responseHeaders,
-                    body = snapshotBytes,
+                    body = finalSnapshotBytes,
                     bodyStream = null
                 )
             } else {
@@ -203,15 +301,49 @@ class RemoteHubProxyHandler(
                             transformUnaryJsonResponse(rawBytes, respContentType) { root ->
                                 DesktopModelCatalog.augmentUserStatusJson(root, quotaSnapshotByGroup)
                             }
-                        response.isSuccessful && request.path.endsWith("/RetrieveUserQuotaSummary") ->
-                            transformUnaryJsonResponse(rawBytes, respContentType) { root ->
-                                DesktopModelCatalog.augmentQuotaSummaryJson(root, quotaSnapshotByGroup)
-                            }
+
+                        request.path.endsWith("/RetrieveUserQuotaSummary") ->
+                            resolveQuotaSummaryResponse(rawBytes, respContentType, response.isSuccessful)
+
+                        response.isSuccessful && request.path.endsWith("/GetAllCascadeTrajectories") ->
+                            transformAllTrajectoriesWithCache(rawBytes, respContentType)
+
+                        request.path.endsWith("/GetCascadeTrajectory") ->
+                            resolveTrajectoryWithCache(rawBytes, respContentType, response.isSuccessful, requestedCascadeId)
+
+                        request.path.endsWith("/GetCascadeTrajectorySteps") -> {
+                            val stepOffset = reqJson?.get("stepOffset")?.jsonPrimitive?.intOrNull ?: 0
+                            resolveStepsWithCache(rawBytes, respContentType, response.isSuccessful, requestedCascadeId, stepOffset)
+                        }
+
                         else -> rawBytes
                     }
 
+                    if (response.isSuccessful && request.path.endsWith("/SendUserCascadeMessage") && requestedCascadeId != null && conversationCache != null) {
+                        val hasWorkspace = reqJson?.get("workspaceUris")?.jsonArray?.isNotEmpty() == true ||
+                            reqJson?.get("cascadeConfig")?.jsonObject?.get("workspaceUris")?.jsonArray?.isNotEmpty() == true ||
+                            reqJson?.get("metadata")?.jsonObject?.get("workspaces")?.jsonArray?.isNotEmpty() == true
+                        val metaProj = reqJson?.get("projectId")?.jsonPrimitive?.content
+                        if (!hasWorkspace && (metaProj.isNullOrBlank() || metaProj == ConversationCacheStore.OUTSIDE_OF_PROJECT_ID)) {
+                            val snippet = reqJson?.get("items")?.jsonArray?.firstOrNull()?.jsonObject
+                                ?.get("text")?.jsonPrimitive?.content?.trim()?.take(60)
+                                ?: "New Conversation"
+                            conversationCache.recordStartedZeroProject(requestedCascadeId, snippet)
+                        }
+                    }
+
+                    val finalStatusCode = if (
+                        request.path.endsWith("/RetrieveUserQuotaSummary") ||
+                        (requestedCascadeId != null && conversationCache?.isTrackedZeroProject(requestedCascadeId) == true &&
+                            (request.path.endsWith("/GetCascadeTrajectory") || request.path.endsWith("/GetCascadeTrajectorySteps")))
+                    ) {
+                        200
+                    } else {
+                        response.code
+                    }
+
                     GrpcWebHttpResponse(
-                        statusCode = response.code,
+                        statusCode = finalStatusCode,
                         contentType = respContentType,
                         headers = responseHeaders,
                         body = responseBytes
@@ -249,6 +381,113 @@ class RemoteHubProxyHandler(
                 "Unexpected relay error: ${e.message}"
             )
         }
+    }
+
+    private fun parseRequestJsonOrNull(body: ByteArray): JsonObject? {
+        if (body.isEmpty()) return null
+        return runCatching {
+            val text = if (body[0] == 0.toByte() && body.size >= 5) {
+                GrpcWebFrameCodec.extractFirstRequestJson(body)
+            } else {
+                body.toString(Charsets.UTF_8)
+            }
+            json.parseToJsonElement(text).jsonObject
+        }.getOrNull()
+    }
+
+    private fun extractUnaryJsonOrNull(rawBytes: ByteArray, contentType: String): Pair<JsonObject, Boolean>? {
+        if (rawBytes.isEmpty()) return null
+        val isGrpcWeb = contentType.contains("grpc-web", ignoreCase = true) || (rawBytes[0] == 0.toByte())
+        val jsonText = if (isGrpcWeb) {
+            val frames = runCatching { GrpcWebFrameCodec.decodeFrames(rawBytes) }.getOrNull() ?: return null
+            val dataFrame = frames.firstOrNull { !it.isTrailer } ?: return null
+            dataFrame.utf8Text
+        } else {
+            rawBytes.toString(Charsets.UTF_8)
+        }
+        val parsed = runCatching { json.parseToJsonElement(jsonText).jsonObject }.getOrNull() ?: return null
+        return parsed to isGrpcWeb
+    }
+
+    private fun encodeUnaryLike(obj: JsonObject, isGrpcWeb: Boolean): ByteArray {
+        val text = obj.toString()
+        return if (isGrpcWeb) GrpcWebFrameCodec.encodeUnaryResponse(text) else text.toByteArray(Charsets.UTF_8)
+    }
+
+    private fun resolveQuotaSummaryResponse(rawBytes: ByteArray, contentType: String, httpSuccess: Boolean): ByteArray {
+        val isGrpcWeb = contentType.contains("grpc-web", ignoreCase = true) || (rawBytes.isNotEmpty() && rawBytes[0] == 0.toByte())
+        val extracted = if (httpSuccess) extractUnaryJsonOrNull(rawBytes, contentType) else null
+        if (extracted != null) {
+            val updated = DesktopModelCatalog.augmentQuotaSummaryJson(extracted.first, quotaSnapshotByGroup)
+            return encodeUnaryLike(updated, extracted.second)
+        }
+        val fallback = buildJsonObject {
+            put("response", buildJsonObject {
+                put("groups", DesktopModelCatalog.buildDefaultQuotaGroups(quotaSnapshotByGroup))
+            })
+        }
+        return encodeUnaryLike(fallback, isGrpcWeb)
+    }
+
+    private fun transformAllTrajectoriesWithCache(rawBytes: ByteArray, contentType: String): ByteArray {
+        val cache = conversationCache ?: return rawBytes
+        return transformUnaryJsonResponse(rawBytes, contentType) { root ->
+            val summaries = root["trajectorySummaries"]?.jsonObject ?: return@transformUnaryJsonResponse null
+            cache.updateFromSummariesMap(summaries)
+            val merged = cache.mergeIntoSummariesMap(summaries)
+            buildJsonObject {
+                root.forEach { (k, v) ->
+                    if (k == "trajectorySummaries") put(k, merged) else put(k, v)
+                }
+            }
+        }
+    }
+
+    private fun resolveTrajectoryWithCache(
+        rawBytes: ByteArray,
+        contentType: String,
+        httpSuccess: Boolean,
+        cascadeId: String?
+    ): ByteArray {
+        val cache = conversationCache ?: return rawBytes
+        val extracted = if (httpSuccess) extractUnaryJsonOrNull(rawBytes, contentType) else null
+        if (extracted != null && cascadeId != null && extracted.first.containsKey("trajectory")) {
+            cache.updateFromTrajectoryResponse(cascadeId, extracted.first)
+            return rawBytes
+        }
+        if (cascadeId != null) {
+            val cached = cache.getCachedTrajectoryResponse(cascadeId)
+            if (cached != null) {
+                val isGrpcWeb = contentType.contains("grpc-web", ignoreCase = true) || (rawBytes.isNotEmpty() && rawBytes[0] == 0.toByte())
+                return encodeUnaryLike(cached, isGrpcWeb)
+            }
+        }
+        return rawBytes
+    }
+
+    private fun resolveStepsWithCache(
+        rawBytes: ByteArray,
+        contentType: String,
+        httpSuccess: Boolean,
+        cascadeId: String?,
+        stepOffset: Int
+    ): ByteArray {
+        val cache = conversationCache ?: return rawBytes
+        val extracted = if (httpSuccess) extractUnaryJsonOrNull(rawBytes, contentType) else null
+        if (extracted != null && cascadeId != null && extracted.first.containsKey("steps")) {
+            if (stepOffset == 0) {
+                cache.updateFromStepsResponse(cascadeId, extracted.first)
+            }
+            return rawBytes
+        }
+        if (cascadeId != null) {
+            val cached = cache.getCachedStepsResponse(cascadeId, stepOffset)
+            if (cached != null) {
+                val isGrpcWeb = contentType.contains("grpc-web", ignoreCase = true) || (rawBytes.isNotEmpty() && rawBytes[0] == 0.toByte())
+                return encodeUnaryLike(cached, isGrpcWeb)
+            }
+        }
+        return rawBytes
     }
 
     /**

@@ -55,8 +55,8 @@ sealed interface BundleValidationResult {
 class JetskiBundleLoader {
 
     companion object {
-        const val KNOWN_DESKTOP_ZIP_OFFSET = 163_294_824L
-        const val KNOWN_DESKTOP_ZIP_LENGTH = 5_628_057L
+        const val KNOWN_DESKTOP_ZIP_OFFSET = 176_652_793L
+        const val KNOWN_DESKTOP_ZIP_LENGTH = 5_930_366L
 
         private const val LOCAL_FILE_HEADER_SIG = 0x04034B50
         private const val CENTRAL_DIR_HEADER_SIG = 0x02014B50
@@ -145,6 +145,18 @@ class JetskiBundleLoader {
             }
             // Keep original desktop model menu, popups, welcome screen, and closable sidebar,
             // while making the model thinking-level chevron always visible and independently tappable.
+            // 2.32.1 targets
+            val trigger2321Target = """B.createElement(qZa,{disabled:d,onPointerDown:q=>{k.current=q.pointerType==="touch"},onPointerCancel:()=>{k.current=!1},onKeyDown:()=>{k.current=!1},onClick:q=>{q.stopPropagation();q=k.current;k.current=!1;q||c?.()},"""
+            val trigger2321Replacement = """B.createElement(qZa,{disabled:d,onPointerDown:q=>{k.current=q.pointerType==="touch"},onPointerCancel:()=>{k.current=!1},onKeyDown:()=>{k.current=!1},onClick:q=>{q.stopPropagation();k.current=!1;if(q.target?.closest?.("[data-agy-submenu-arrow]")){q.preventDefault();return}c?.(q)},"""
+            if (text.contains(trigger2321Target)) {
+                text = text.replace(trigger2321Target, trigger2321Replacement)
+            }
+            val chevron2321Target = """B.createElement("span",{className:Gi("flex shrink-0 pl-1 opacity-50",f&&Gi("can-hover:hidden can-hover:group-hover:flex can-hover:group-data-[highlighted]:flex",!m&&"can-hover:group-focus:flex"))},B.createElement(nq,{name:"chevron_right",size:14}))"""
+            val chevron2321Replacement = """B.createElement("span",{"data-agy-submenu-arrow":"1",className:"flex shrink-0 items-center justify-center pl-2 pr-1 py-0.5 -mr-1 rounded opacity-70 hover:opacity-100"},B.createElement(nq,{name:"chevron_right",size:14}))"""
+            if (text.contains(chevron2321Target)) {
+                text = text.replace(chevron2321Target, chevron2321Replacement)
+            }
+            // 2.29.1 fallback targets
             val submenuTriggerTarget = """A.createElement(DRa,{disabled:d,onClick:p=>{p.stopPropagation();c?.(p)},"""
             val submenuTriggerReplacement = """A.createElement(DRa,{disabled:d,onClick:p=>{p.stopPropagation();if(p.target?.closest?.("[data-agy-submenu-arrow]")){p.preventDefault();return}c?.(p)},"""
             if (text.contains(submenuTriggerTarget)) {
@@ -537,11 +549,22 @@ class JetskiBundleLoader {
               .settings-modal-container * {
                 box-sizing: border-box !important;
               }
+              .settings-modal-container .p-6 {
+                padding: 16px !important;
+              }
               .settings-modal-container .flex,
               .settings-modal-container .flex-1,
               .settings-modal-container .flex-grow,
               .settings-modal-container .grow {
                 min-width: 0 !important;
+              }
+              .settings-modal-container .shrink-0,
+              .settings-modal-container .flex-shrink-0,
+              .settings-modal-container svg {
+                flex-shrink: 0 !important;
+              }
+              .settings-modal-container svg {
+                overflow: visible !important;
               }
               .settings-modal-container .overflow-auto {
                 overflow-x: hidden !important;
@@ -553,10 +576,23 @@ class JetskiBundleLoader {
                 max-width: 100% !important;
                 min-width: 0 !important;
               }
+              .settings-modal-container .agy-card > div:has(> .shrink-0 a),
+              .settings-modal-container .agy-card > div:has(> .shrink-0 button + button),
+              .settings-modal-container .agy-card > div:has(> .shrink-0 select) {
+                flex-wrap: wrap !important;
+                row-gap: 8px !important;
+              }
+              .settings-modal-container .agy-card > div > .shrink-0 {
+                max-width: 100% !important;
+              }
+              .settings-modal-container .agy-card > div > .shrink-0 > div {
+                flex-wrap: wrap !important;
+                max-width: 100% !important;
+              }
               .settings-modal-container span,
               .settings-modal-container p,
               .settings-modal-container a {
-                overflow-wrap: anywhere !important;
+                overflow-wrap: break-word !important;
               }
               .settings-modal-container input,
               .settings-modal-container textarea,
@@ -568,6 +604,10 @@ class JetskiBundleLoader {
               .settings-modal-container > button[aria-label="Close"] {
                 top: 8px !important;
                 right: 12px !important;
+              }
+              [data-testid="autoscroll-viewport"] {
+                overscroll-behavior-y: contain !important;
+                -webkit-overflow-scrolling: touch !important;
               }
               div[role="dialog"]:not([data-testid="bottom-sheet"]):not(.settings-modal-container) {
                 max-width: calc(100vw - 24px) !important;
@@ -801,7 +841,14 @@ class JetskiBundleLoader {
                 append("            return function(...args) {\n")
                 append("              const methodName = String(prop);\n")
                 append("              window.__JETSKI_RPC_HISTORY__.push({ method: methodName, ts: Date.now() });\n")
+                append("              if (methodName === 'deleteCascadeTrajectory' || methodName === 'deleteCascade') {\n")
+                append("                const delId = args[0]?.cascadeId;\n")
+                append("                if (delId) {\n")
+                append("                  try { window.__ANTIGRAVITY_ANDROID_BRIDGE__?.markZeroProjectDeleted?.(delId); } catch (e) {}\n")
+                append("                }\n")
+                append("              }\n")
                 append("              if (methodName === 'sendUserCascadeMessage' && args[0]) {\n")
+                append("                window.__agyAllowAutoScrollUntil = Date.now() + 3000;\n")
                 append("                patchCascadeSandboxConfig(args[0]);\n")
                 append("                if (!window.__agyPatchedServerSandbox) {\n")
                 append("                  window.__agyPatchedServerSandbox = true;\n")
@@ -814,31 +861,51 @@ class JetskiBundleLoader {
                 append("                patchUserSettingsObject(args[0].userConfig.userSettings);\n")
                 append("              }\n")
                 append("              if (methodName === 'streamAgentStateUpdates') {\n")
+                append("                const reqArg = args[0] || {};\n")
                 append("                const opts = args[1];\n")
                 append("                const signal = opts && opts.signal;\n")
                 append("                const self = this;\n")
                 append("                return (async function*() {\n")
                 append("                  let lastSig = '';\n")
                 append("                  while (!signal || !signal.aborted) {\n")
-                append("                    const rawIterable = orig.apply(self, args);\n")
-                append("                    for await (const msg of rawIterable) {\n")
-                append("                      if (signal && signal.aborted) return;\n")
-                append("                      const u = msg && msg.update;\n")
-                append("                      let sig = '';\n")
-                append("                      try {\n")
-                append("                        sig = JSON.stringify(u || msg, (_, v) => typeof v === 'bigint' ? v.toString() : v);\n")
-                append("                      } catch (err) {\n")
+                append("                    try {\n")
+                append("                      const rawIterable = orig.apply(self, args);\n")
+                append("                      for await (const msg of rawIterable) {\n")
+                append("                        if (signal && signal.aborted) return;\n")
+                append("                        const u = msg && msg.update;\n")
                 append("                        const su = u && u.mainTrajectoryUpdate && u.mainTrajectoryUpdate.stepsUpdate;\n")
-                append("                        sig = JSON.stringify({ s: u && u.status, i: u && u.fullyIdle, l: su ? su.totalLength : 0 });\n")
+                append("                        if (u && (u.fullyIdle || u.status === 'CASCADE_RUN_STATUS_IDLE') && su && Array.isArray(su.steps) && su.steps.length > 0) {\n")
+                append("                          const cid = u.conversationId || reqArg.conversationId;\n")
+                append("                          const isKnownZero = window.__agyZeroProjectIds && window.__agyZeroProjectIds.has(cid);\n")
+                append("                          if (cid && isKnownZero) {\n")
+                append("                            try {\n")
+                append("                              const firstUser = su.steps.find(s => s && (s.type === 'CORTEX_STEP_TYPE_USER_INPUT' || s.userInput));\n")
+                append("                              const snippet = firstUser?.userInput?.items?.[0]?.text || firstUser?.userInput?.userResponse || 'Conversation';\n")
+                append("                              window.__ANTIGRAVITY_ANDROID_BRIDGE__?.cacheZeroProjectSnapshot?.(\n")
+                append("                                cid,\n")
+                append("                                String(snippet).trim().slice(0, 60),\n")
+                append("                                JSON.stringify({ steps: su.steps }, (_, v) => typeof v === 'bigint' ? v.toString() : v)\n")
+                append("                              );\n")
+                append("                            } catch (e) {}\n")
+                append("                          }\n")
+                append("                        }\n")
+                append("                        let sig = '';\n")
+                append("                        try {\n")
+                append("                          sig = JSON.stringify(u || msg, (_, v) => typeof v === 'bigint' ? v.toString() : v);\n")
+                append("                        } catch (err) {\n")
+                append("                          sig = JSON.stringify({ s: u && u.status, i: u && u.fullyIdle, l: su ? su.totalLength : 0 });\n")
+                append("                        }\n")
+                append("                        if (sig !== lastSig) {\n")
+                append("                          lastSig = sig;\n")
+                append("                          yield msg;\n")
+                append("                        }\n")
                 append("                      }\n")
-                append("                      if (sig !== lastSig) {\n")
-                append("                        lastSig = sig;\n")
-                append("                        yield msg;\n")
-                append("                      }\n")
+                append("                    } catch (err) {\n")
+                append("                      if (signal && signal.aborted) return;\n")
                 append("                    }\n")
                 append("                    if (signal && signal.aborted) return;\n")
                 append("                    await new Promise(resolve => {\n")
-                append("                      const timer = setTimeout(resolve, 350);\n")
+                append("                      const timer = setTimeout(resolve, 250);\n")
                 append("                      if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });\n")
                 append("                    });\n")
                 append("                  }\n")
@@ -891,9 +958,23 @@ class JetskiBundleLoader {
                 append("                            if (consecutiveEmptyProjects < 4) continue;\n")
                 append("                          }\n")
                 append("                        }\n")
-                append("                        if (methodName === 'jetboxSubscribeToSummaries' && !reqArg.backend && msg?.summaries) {\n")
-                append("                          const n = Object.keys(msg.summaries).length;\n")
-                append("                          if (n > 0) window.__agyLoadedSummaryCount = n;\n")
+                append("                        if (methodName === 'jetboxSubscribeToSummaries' && !reqArg.backend) {\n")
+                append("                          const sumMap = msg?.updates || msg?.summaries;\n")
+                append("                          if (sumMap && typeof sumMap === 'object') {\n")
+                append("                            const keys = Object.keys(sumMap);\n")
+                append("                            if (keys.length > 0) window.__agyLoadedSummaryCount = keys.length;\n")
+                append("                            window.__agyZeroProjectIds = window.__agyZeroProjectIds || new Set();\n")
+                append("                            keys.forEach((cid) => {\n")
+                append("                              const item = sumMap[cid];\n")
+                append("                              const pid = item?.trajectoryMetadata?.projectId;\n")
+                append("                              const ws = item?.workspaces;\n")
+                append("                              if ((!pid || pid === 'outside-of-project') && (!ws || ws.length === 0)) {\n")
+                append("                                window.__agyZeroProjectIds.add(cid);\n")
+                append("                              } else {\n")
+                append("                                window.__agyZeroProjectIds.delete(cid);\n")
+                append("                              }\n")
+                append("                            });\n")
+                append("                          }\n")
                 append("                        }\n")
                 append("                        let sig = '';\n")
                 append("                        try {\n")
@@ -1667,6 +1748,65 @@ class JetskiBundleLoader {
                 append("      window.addEventListener('pointerup', endPointerDrag, { capture: true, passive: true });\n")
                 append("      window.addEventListener('pointercancel', endPointerDrag, { capture: true, passive: true });\n")
                 append("    })();\n")
+                append("    (function() {\n")
+                append("      let isTouchScrollingChat = false;\n")
+                append("      let userPausedScrollAt = 0;\n")
+                append("      const lastTopMap = new WeakMap();\n")
+                append("      const origScrollTo = Element.prototype.scrollTo;\n")
+                append("      function isChatViewport(el) {\n")
+                append("        return !!(el && el.getAttribute && el.getAttribute('data-testid') === 'autoscroll-viewport');\n")
+                append("      }\n")
+                append("      function distFromBottom(el) {\n")
+                append("        return Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0) - (el.scrollTop || 0));\n")
+                append("      }\n")
+                append("      document.addEventListener('touchstart', (e) => {\n")
+                append("        const vp = e.target && e.target.closest ? e.target.closest('[data-testid=\"autoscroll-viewport\"]') : null;\n")
+                append("        if (vp) {\n")
+                append("          isTouchScrollingChat = true;\n")
+                append("          lastTopMap.set(vp, vp.scrollTop);\n")
+                append("        }\n")
+                append("      }, { capture: true, passive: true });\n")
+                append("      document.addEventListener('touchmove', (e) => {\n")
+                append("        const vp = e.target && e.target.closest ? e.target.closest('[data-testid=\"autoscroll-viewport\"]') : null;\n")
+                append("        if (vp) {\n")
+                append("          isTouchScrollingChat = true;\n")
+                append("          userPausedScrollAt = Date.now();\n")
+                append("        }\n")
+                append("      }, { capture: true, passive: true });\n")
+                append("      const endChatTouch = () => { isTouchScrollingChat = false; };\n")
+                append("      window.addEventListener('touchend', endChatTouch, { capture: true, passive: true });\n")
+                append("      window.addEventListener('touchcancel', endChatTouch, { capture: true, passive: true });\n")
+                append("      document.addEventListener('scroll', (e) => {\n")
+                append("        const vp = e.target;\n")
+                append("        if (!isChatViewport(vp)) return;\n")
+                append("        const prev = lastTopMap.has(vp) ? lastTopMap.get(vp) : vp.scrollTop;\n")
+                append("        const cur = vp.scrollTop;\n")
+                append("        lastTopMap.set(vp, cur);\n")
+                append("        if (cur < prev - 2 || distFromBottom(vp) > 36) {\n")
+                append("          userPausedScrollAt = Date.now();\n")
+                append("        }\n")
+                append("      }, { capture: true, passive: true });\n")
+                append("      document.addEventListener('click', (e) => {\n")
+                append("        if (e.target && e.target.closest && e.target.closest('.agy-scroll-bottom')) {\n")
+                append("          userPausedScrollAt = 0;\n")
+                append("          window.__agyAllowAutoScrollUntil = Date.now() + 1500;\n")
+                append("        }\n")
+                append("      }, true);\n")
+                append("      Element.prototype.scrollTo = function(arg1, arg2) {\n")
+                append("        if (isChatViewport(this)) {\n")
+                append("          const targetTop = (typeof arg1 === 'object' && arg1 !== null) ? arg1.top : arg2;\n")
+                append("          const allowExplicit = (window.__agyAllowAutoScrollUntil || 0) > Date.now();\n")
+                append("          const maxTop = Math.max(0, this.scrollHeight - this.clientHeight);\n")
+                append("          const isBottomJump = typeof targetTop === 'number' && targetTop >= maxTop - 16 && maxTop > 80;\n")
+                append("          if (!allowExplicit && isBottomJump) {\n")
+                append("            if (isTouchScrollingChat || distFromBottom(this) > 48 || (Date.now() - userPausedScrollAt) < 1200) {\n")
+                append("              return;\n")
+                append("            }\n")
+                append("          }\n")
+                append("        }\n")
+                append("        return origScrollTo.apply(this, arguments);\n")
+                append("      };\n")
+                append("    })();\n")
                 append("  }\n")
             }
             append("</script>")
@@ -1701,18 +1841,22 @@ class JetskiBundleLoader {
             }
         }
 
-        // 2. Fast-path check for verified Antigravity 1.107.0 language_server.exe offset
+        // 2. Fast-path check for verified Antigravity 2.32.1 language_server.exe offset
         if (fileLen >= KNOWN_DESKTOP_ZIP_OFFSET + KNOWN_DESKTOP_ZIP_LENGTH) {
             raf.seek(KNOWN_DESKTOP_ZIP_OFFSET)
             if (Integer.reverseBytes(raf.readInt()) == LOCAL_FILE_HEADER_SIG) {
-                return KNOWN_DESKTOP_ZIP_OFFSET to KNOWN_DESKTOP_ZIP_LENGTH
+                val cd = parseCentralDirectory(raf, KNOWN_DESKTOP_ZIP_OFFSET, KNOWN_DESKTOP_ZIP_LENGTH)
+                if (cd != null && cd.containsKey("index.html") && cd.containsKey("main.js")) {
+                    return KNOWN_DESKTOP_ZIP_OFFSET to KNOWN_DESKTOP_ZIP_LENGTH
+                }
             }
         }
 
-        // 3. Dynamic scan across the binary for EOCD record (0x06054b50) with relative offsets
+        // 3. Dynamic scan across the binary for EOCD record (0x06054b50) containing Jetski Web assets
         val chunkSize = 1024 * 1024
         val buf = ByteArray(chunkSize + 64)
         var pos = 0L
+        var firstValidFallback: Pair<Long, Long>? = null
         while (pos < fileLen) {
             raf.seek(pos)
             val read = raf.read(buf, 0, minOf(buf.size.toLong(), fileLen - pos).toInt())
@@ -1734,14 +1878,22 @@ class JetskiBundleLoader {
                     if (entries in 5..5000 && zipStart >= 0 && zipStart + zipTotalLen <= fileLen) {
                         raf.seek(zipStart)
                         if (Integer.reverseBytes(raf.readInt()) == LOCAL_FILE_HEADER_SIG) {
-                            return zipStart to zipTotalLen
+                            val cd = parseCentralDirectory(raf, zipStart, zipTotalLen)
+                            if (cd != null) {
+                                if (cd.containsKey("index.html") && cd.containsKey("main.js")) {
+                                    return zipStart to zipTotalLen
+                                }
+                                if (firstValidFallback == null) {
+                                    firstValidFallback = zipStart to zipTotalLen
+                                }
+                            }
                         }
                     }
                 }
             }
             pos += chunkSize
         }
-        return null
+        return firstValidFallback
     }
 
     private fun findEocdInRange(raf: RandomAccessFile, start: Long, end: Long): Pair<Long, Long>? {

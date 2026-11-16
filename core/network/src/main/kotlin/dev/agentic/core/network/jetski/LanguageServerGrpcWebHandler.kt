@@ -7,6 +7,7 @@ import dev.agentic.core.model.Role
 import dev.agentic.core.model.ToolCall
 import dev.agentic.core.network.GeminiModelProvider
 import dev.agentic.core.network.hub.BackendMode
+import dev.agentic.core.network.hub.ConversationCacheStore
 import dev.agentic.core.network.hub.DesktopModelCatalog
 import dev.agentic.core.network.hub.RemoteHubProxyHandler
 import dev.agentic.model.ModelProvider
@@ -20,6 +21,10 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -129,7 +134,8 @@ class LanguageServerGrpcWebHandler(
     private val agentTurnTimeoutMs: Long = 900_000L,
     private val onConversationUpdated: ((cascadeId: String, title: String, messages: List<Message>) -> Unit)? = null,
     val hubProxyHandler: RemoteHubProxyHandler? = null,
-    initialBackendMode: BackendMode = if (hubProxyHandler != null) BackendMode.STANDALONE_IN_APP_BACKEND else BackendMode.LOCAL_GEMINI_FALLBACK
+    initialBackendMode: BackendMode = if (hubProxyHandler != null) BackendMode.STANDALONE_IN_APP_BACKEND else BackendMode.LOCAL_GEMINI_FALLBACK,
+    private val conversationCache: ConversationCacheStore? = hubProxyHandler?.conversationCache
 ) {
     @Volatile
     var backendMode: BackendMode = initialBackendMode
@@ -137,6 +143,22 @@ class LanguageServerGrpcWebHandler(
 
     fun setBackendMode(mode: BackendMode) {
         backendMode = mode
+    }
+
+    fun cacheZeroProjectSnapshot(cascadeId: String, summary: String, stepsResponseJson: String) {
+        val cache = conversationCache ?: return
+        if (cascadeId.isBlank()) return
+        try {
+            val parsedSteps = json.parseToJsonElement(stepsResponseJson).jsonObject
+            cache.recordStartedZeroProject(cascadeId, summary.ifBlank { "Untitled Conversation" })
+            cache.updateFromStepsResponse(cascadeId, parsedSteps)
+        } catch (_: Exception) {}
+    }
+
+    fun markZeroProjectDeleted(cascadeId: String) {
+        if (cascadeId.isNotBlank()) {
+            conversationCache?.markDeleted(cascadeId)
+        }
     }
     companion object {
         const val SERVICE_PREFIX = "/exa.language_server_pb.LanguageServerService/"
@@ -162,12 +184,91 @@ class LanguageServerGrpcWebHandler(
     private val activeCascadeJobs = ConcurrentHashMap<String, Job>()
     private var themeMode: Int = 1 // 1 = Dark in jetbox_state_pb.UserSettings
 
+    private val streamScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val _stateUpdateEvents = MutableSharedFlow<Pair<String, JsonObject>>(extraBufferCapacity = 256)
     val stateUpdateEvents: SharedFlow<Pair<String, JsonObject>> = _stateUpdateEvents.asSharedFlow()
 
     init {
         workspaceRootDir.mkdirs()
         seedDefaultProjectAndWelcomeTrajectory()
+        restoreZeroProjectCache()
+    }
+
+    private fun restoreZeroProjectCache() {
+        val cache = conversationCache ?: return
+        val outsideProj = projects["outside-of-project"]
+        for (entry in cache.listCachedEntries()) {
+            val stepsObj = cache.getCachedStepsResponse(entry.cascadeId, 0)
+            val stepsArr = stepsObj?.get("steps")?.jsonArray
+            val restoredSteps = CopyOnWriteArrayList<CascadeStepRecord>()
+            val restoredHistory = CopyOnWriteArrayList<Message>()
+            stepsArr?.forEachIndexed { idx, el ->
+                val obj = el.jsonObject
+                val type = obj["type"]?.jsonPrimitive?.content ?: "CORTEX_STEP_TYPE_GENERIC"
+                val status = obj["status"]?.jsonPrimitive?.content ?: "CORTEX_STEP_STATUS_DONE"
+                val created = obj["metadata"]?.jsonObject?.get("createdAt")?.jsonPrimitive?.content
+                    ?: entry.createdTimeIso.ifBlank { Instant.now().toString() }
+                val completed = obj["metadata"]?.jsonObject?.get("completedAt")?.jsonPrimitive?.content
+                val userText = obj["userInput"]?.jsonObject?.get("items")?.jsonArray?.firstOrNull()?.jsonObject
+                    ?.get("text")?.jsonPrimitive?.content
+                    ?: obj["userInput"]?.jsonObject?.get("userResponse")?.jsonPrimitive?.content
+                val plannerText = obj["plannerResponse"]?.jsonObject?.get("response")?.jsonPrimitive?.content
+                    ?: obj["plannerResponse"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+                val thinkingText = obj["plannerResponse"]?.jsonObject?.get("thinking")?.jsonPrimitive?.content
+                val errText = obj["error"]?.jsonObject?.get("shortError")?.jsonPrimitive?.content
+                restoredSteps.add(
+                    CascadeStepRecord(
+                        stepIndex = idx,
+                        type = type,
+                        status = status,
+                        createdAtIso = created,
+                        completedAtIso = completed,
+                        userText = userText,
+                        plannerResponseText = plannerText,
+                        plannerThinkingText = thinkingText,
+                        errorMessage = errText
+                    )
+                )
+                if (!userText.isNullOrBlank()) {
+                    restoredHistory.add(Message("msg-${entry.cascadeId}-$idx-u", entry.cascadeId, Role.USER, userText))
+                }
+                if (!plannerText.isNullOrBlank()) {
+                    restoredHistory.add(Message("msg-${entry.cascadeId}-$idx-a", entry.cascadeId, Role.ASSISTANT, plannerText))
+                }
+            }
+            if (restoredSteps.isEmpty() && entry.summary == "New Conversation" && entry.stepCount == 0) {
+                continue
+            }
+            val rec = CascadeTrajectoryRecord(
+                cascadeId = entry.cascadeId,
+                trajectoryId = "traj-${entry.cascadeId}",
+                projectId = "outside-of-project",
+                summary = entry.summary,
+                status = "CASCADE_RUN_STATUS_IDLE",
+                fullyIdle = true,
+                createdTimeIso = entry.createdTimeIso.ifBlank { Instant.now().toString() },
+                lastModifiedTimeIso = entry.lastModifiedTimeIso.ifBlank { Instant.now().toString() },
+                steps = restoredSteps,
+                conversationHistory = restoredHistory
+            )
+            trajectories.putIfAbsent(entry.cascadeId, rec)
+            if (outsideProj != null && entry.cascadeId !in outsideProj.conversationIds) {
+                outsideProj.conversationIds.add(entry.cascadeId)
+            }
+        }
+    }
+
+    private fun persistZeroProjectIfApplicable(record: CascadeTrajectoryRecord) {
+        val cache = conversationCache ?: return
+        if (record.projectId != "outside-of-project" && record.projectId.isNotBlank()) return
+        val summaryObj = buildSingleSummaryJson(record)
+        cache.updateFromSummaryObject(record.cascadeId, summaryObj)
+        val stepsResp = buildJsonObject {
+            put("steps", buildJsonArray {
+                for (s in record.steps) add(encodeStepJson(s))
+            })
+        }
+        cache.updateFromStepsResponse(record.cascadeId, stepsResp)
     }
 
     private fun seedDefaultProjectAndWelcomeTrajectory() {
@@ -480,21 +581,56 @@ class LanguageServerGrpcWebHandler(
                     )
                 }
 
-                // Multi-frame server-streaming mode for StreamAgentStateUpdates when requested
-                if (rpcMethod == "StreamAgentStateUpdates" &&
-                    requestJson["includeIncrementalHistory"]?.jsonPrimitive?.booleanOrNull == true
-                ) {
+                // Multi-frame / real-time server-streaming mode for StreamAgentStateUpdates
+                if (rpcMethod == "StreamAgentStateUpdates") {
                     val conversationId = requestJson["conversationId"]?.jsonPrimitive?.content ?: DEFAULT_CASCADE_ID
                     val record = trajectories[conversationId]
-                    val payloads = if (record != null && record.incrementalUpdates.isNotEmpty()) {
-                        record.incrementalUpdates.map { it.toString() }
-                    } else {
-                        listOf(dispatchRpc(rpcMethod, requestJson).toString())
+                    if (requestJson["includeIncrementalHistory"]?.jsonPrimitive?.booleanOrNull == true) {
+                        val payloads = if (record != null && record.incrementalUpdates.isNotEmpty()) {
+                            record.incrementalUpdates.map { it.toString() }
+                        } else {
+                            listOf(dispatchRpc(rpcMethod, requestJson).toString())
+                        }
+                        return@withTimeout GrpcWebHttpResponse(
+                            statusCode = 200,
+                            body = GrpcWebFrameCodec.encodeServerStreamResponse(payloads)
+                        )
                     }
-                    return@withTimeout GrpcWebHttpResponse(
-                        statusCode = 200,
-                        body = GrpcWebFrameCodec.encodeServerStreamResponse(payloads)
-                    )
+                    if (record != null && !record.fullyIdle && record.status == "CASCADE_RUN_STATUS_RUNNING") {
+                        val pipedIn = java.io.PipedInputStream(64 * 1024)
+                        val pipedOut = java.io.PipedOutputStream(pipedIn)
+                        streamScope.launch {
+                            try {
+                                val initial = buildStreamAgentStateUpdateJson(record).toString()
+                                pipedOut.write(GrpcWebFrameCodec.encodeDataFrame(initial))
+                                pipedOut.flush()
+                                if (!record.fullyIdle) {
+                                    stateUpdateEvents.collect { (cid, snap) ->
+                                        if (cid == conversationId) {
+                                            pipedOut.write(GrpcWebFrameCodec.encodeDataFrame(snap.toString()))
+                                            pipedOut.flush()
+                                            val done = snap["update"]?.jsonObject?.get("fullyIdle")?.jsonPrimitive?.booleanOrNull == true
+                                            if (done) {
+                                                throw kotlinx.coroutines.CancellationException("Stream finished")
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (_: Exception) {
+                            } finally {
+                                runCatching {
+                                    pipedOut.write(GrpcWebFrameCodec.encodeTrailerFrame(GrpcStatus.OK))
+                                    pipedOut.flush()
+                                }
+                                runCatching { pipedOut.close() }
+                            }
+                        }
+                        return@withTimeout GrpcWebHttpResponse(
+                            statusCode = 200,
+                            body = ByteArray(0),
+                            bodyStream = pipedIn
+                        )
+                    }
                 }
 
                 val responseJson = dispatchRpc(rpcMethod, requestJson)
@@ -744,12 +880,16 @@ class LanguageServerGrpcWebHandler(
             "StartCascade" -> {
                 val requestedId = req["cascadeId"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
                 val newCascadeId = requestedId ?: UUID.randomUUID().toString()
+                val hasWorkspaces = req["workspaceUris"]?.jsonArray?.isNotEmpty() == true ||
+                    req["cascadeConfig"]?.jsonObject?.get("workspaceUris")?.jsonArray?.isNotEmpty() == true
+                val requestedProjectId = req["projectId"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                    ?: if (!hasWorkspaces) "outside-of-project" else DEFAULT_PROJECT_ID
                 val now = Instant.now().toString()
                 val record = trajectories.computeIfAbsent(newCascadeId) {
                     CascadeTrajectoryRecord(
                         cascadeId = newCascadeId,
                         trajectoryId = "traj-$newCascadeId",
-                        projectId = DEFAULT_PROJECT_ID,
+                        projectId = requestedProjectId,
                         summary = "New Conversation",
                         status = "CASCADE_RUN_STATUS_IDLE",
                         fullyIdle = true,
@@ -757,14 +897,28 @@ class LanguageServerGrpcWebHandler(
                         lastModifiedTimeIso = now
                     )
                 }
-                val defaultProj = projects[DEFAULT_PROJECT_ID]
-                if (defaultProj != null && !defaultProj.conversationIds.contains(newCascadeId)) {
-                    defaultProj.conversationIds.add(0, newCascadeId)
+                val targetProj = projects[requestedProjectId] ?: projects[DEFAULT_PROJECT_ID]
+                if (targetProj != null && !targetProj.conversationIds.contains(newCascadeId)) {
+                    targetProj.conversationIds.add(0, newCascadeId)
+                }
+                if (requestedProjectId == "outside-of-project") {
+                    conversationCache?.recordStartedZeroProject(newCascadeId, "New Conversation")
                 }
                 emitLiveTrajectoryUpdate(record)
                 buildJsonObject {
                     put("cascadeId", newCascadeId)
                 }
+            }
+
+            "DeleteCascadeTrajectory", "DeleteCascade" -> {
+                val cid = req["cascadeId"]?.jsonPrimitive?.content
+                if (!cid.isNullOrBlank()) {
+                    activeCascadeJobs.remove(cid)?.cancel(CancellationException("Deleted"))
+                    trajectories.remove(cid)
+                    projects.values.forEach { it.conversationIds.remove(cid) }
+                    conversationCache?.markDeleted(cid)
+                }
+                buildJsonObject {}
             }
 
             "SendUserCascadeMessage" -> handleSendUserCascadeMessage(req)
@@ -925,20 +1079,25 @@ class LanguageServerGrpcWebHandler(
         }
 
         val requestedModelId = extractRequestedModelId(req)
+        val hasWorkspaces = req["workspaceUris"]?.jsonArray?.isNotEmpty() == true ||
+            req["cascadeConfig"]?.jsonObject?.get("workspaceUris")?.jsonArray?.isNotEmpty() == true ||
+            req["metadata"]?.jsonObject?.get("workspaces")?.jsonArray?.isNotEmpty() == true
+        val inferredProjectId = req["projectId"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+            ?: if (!hasWorkspaces) "outside-of-project" else DEFAULT_PROJECT_ID
         val now = Instant.now().toString()
         val record = trajectories.computeIfAbsent(cascadeId) {
             CascadeTrajectoryRecord(
                 cascadeId = cascadeId,
                 trajectoryId = "traj-$cascadeId",
-                projectId = DEFAULT_PROJECT_ID,
+                projectId = inferredProjectId,
                 summary = promptText.take(60),
                 createdTimeIso = now,
                 lastModifiedTimeIso = now
             )
         }
-        val defaultProj = projects[DEFAULT_PROJECT_ID]
-        if (defaultProj != null && !defaultProj.conversationIds.contains(cascadeId)) {
-            defaultProj.conversationIds.add(0, cascadeId)
+        val targetProj = projects[record.projectId] ?: projects[DEFAULT_PROJECT_ID]
+        if (targetProj != null && !targetProj.conversationIds.contains(cascadeId)) {
+            targetProj.conversationIds.add(0, cascadeId)
         }
         if (record.summary == "New Conversation" || record.summary == "Untitled Conversation") {
             record.summary = promptText.take(60)
@@ -1137,6 +1296,7 @@ class LanguageServerGrpcWebHandler(
             record.conversationHistory.clear()
             record.conversationHistory.addAll(outcome.updatedHistory)
             emitLiveTrajectoryUpdate(record)
+            persistZeroProjectIfApplicable(record)
 
             onConversationUpdated?.invoke(cascadeId, record.summary, outcome.updatedHistory)
         } catch (e: GrpcWebProtocolException) {
@@ -1282,33 +1442,39 @@ class LanguageServerGrpcWebHandler(
         return sb.toString().trim()
     }
 
+    private fun buildSingleSummaryJson(rec: CascadeTrajectoryRecord): JsonObject {
+        val lastUserStepIdx = rec.steps
+            .lastOrNull { it.type == "CORTEX_STEP_TYPE_USER_INPUT" }
+            ?.stepIndex ?: 0
+        return buildJsonObject {
+            put("summary", rec.summary)
+            put("stepCount", rec.steps.size)
+            put("lastModifiedTime", rec.lastModifiedTimeIso)
+            put("trajectoryId", rec.trajectoryId)
+            put("status", rec.status)
+            put("createdTime", rec.createdTimeIso)
+            put("lastUserInputTime", rec.lastModifiedTimeIso)
+            put("lastUserInputStepIndex", lastUserStepIdx)
+            put("annotations", buildJsonObject {
+                put("title", rec.summary)
+                put("lastUserViewTime", rec.lastModifiedTimeIso)
+            })
+            put("trajectoryMetadata", buildJsonObject {
+                put("rootConversationId", rec.cascadeId)
+                put("projectId", rec.projectId)
+                put("workspaceUris", buildJsonArray {
+                    if (rec.projectId != "outside-of-project") {
+                        add(JsonPrimitive(WorkspacePathResolver.toNormalizedFileUri(workspaceRootDir)))
+                    }
+                })
+            })
+        }
+    }
+
     private fun buildSummariesMapJson(): JsonObject {
         return buildJsonObject {
             for ((cascadeId, rec) in trajectories) {
-                val lastUserStepIdx = rec.steps
-                    .lastOrNull { it.type == "CORTEX_STEP_TYPE_USER_INPUT" }
-                    ?.stepIndex ?: 0
-                put(cascadeId, buildJsonObject {
-                    put("summary", rec.summary)
-                    put("stepCount", rec.steps.size)
-                    put("lastModifiedTime", rec.lastModifiedTimeIso)
-                    put("trajectoryId", rec.trajectoryId)
-                    put("status", rec.status)
-                    put("createdTime", rec.createdTimeIso)
-                    put("lastUserInputTime", rec.lastModifiedTimeIso)
-                    put("lastUserInputStepIndex", lastUserStepIdx)
-                    put("annotations", buildJsonObject {
-                        put("title", rec.summary)
-                        put("lastUserViewTime", rec.lastModifiedTimeIso)
-                    })
-                    put("trajectoryMetadata", buildJsonObject {
-                        put("rootConversationId", cascadeId)
-                        put("projectId", rec.projectId)
-                        put("workspaceUris", buildJsonArray {
-                            add(JsonPrimitive(WorkspacePathResolver.toNormalizedFileUri(workspaceRootDir)))
-                        })
-                    })
-                })
+                put(cascadeId, buildSingleSummaryJson(rec))
             }
         }
     }

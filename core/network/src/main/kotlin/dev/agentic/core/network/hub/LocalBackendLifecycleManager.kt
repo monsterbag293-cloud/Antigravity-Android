@@ -211,7 +211,7 @@ class LocalBackendLifecycleManager(
                 add("--disable_telemetry=true")
                 add("--headless=false")
                 add("--override_ide_name=antigravity")
-                add("--override_ide_version=2.29.1")
+                add("--override_ide_version=2.32.1")
                 add("--override_user_agent_name=antigravity")
                 add("--subclient_type=hub")
                 add("--api_server_url=https://generativelanguage.googleapis.com")

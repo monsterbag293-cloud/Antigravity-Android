@@ -517,7 +517,8 @@ object DesktopModelCatalog {
         quotaCache: Map<String, ModelQuotaSnapshot> = emptyMap(),
         now: Instant = Instant.now()
     ): JsonObject {
-        val responseObj = root["response"]?.jsonObject ?: buildJsonObject {}
+        val responseObj = root["response"]?.jsonObject
+            ?: if (root.containsKey("groups")) root else buildJsonObject {}
         val existingGroups = responseObj["groups"]?.jsonArray?.toList().orEmpty()
 
         val byDisplayName = mutableMapOf<String, JsonObject>()
@@ -571,8 +572,12 @@ object DesktopModelCatalog {
             val hasDesc = !bObj["description"]?.jsonPrimitive?.content.isNullOrBlank()
             val hasDisplay = !bObj["displayName"]?.jsonPrimitive?.content.isNullOrBlank()
             val window = bObj["window"]?.jsonPrimitive?.content ?: ""
+            val hasRemaining = bObj.containsKey("remainingFraction") || bObj.containsKey("remaining")
             buildJsonObject {
                 bObj.forEach { (k, v) -> put(k, v) }
+                if (!hasRemaining) {
+                    put("remainingFraction", 1.0)
+                }
                 if (!hasDisplay) {
                     val label = when (window.trim().lowercase()) {
                         "weekly" -> "Weekly limit"

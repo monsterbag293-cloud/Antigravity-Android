@@ -67,8 +67,14 @@ class MainActivity : ComponentActivity() {
         val csrfToken = "ag-android-${UUID.randomUUID()}"
         val workspaceRoot = File(filesDir, "workspace")
 
+        val conversationCache = dev.agentic.core.network.hub.ConversationCacheStore(
+            File(filesDir, "zero_project_cache.json")
+        )
         val hubConnectionManager = RemoteHubConnectionManager()
-        val hubProxyHandler = RemoteHubProxyHandler(hubConnectionManager)
+        val hubProxyHandler = RemoteHubProxyHandler(
+            connectionManager = hubConnectionManager,
+            conversationCache = conversationCache
+        )
 
         val lifecycleManager = LocalBackendLifecycleManager(
             context = applicationContext,
@@ -82,7 +88,8 @@ class MainActivity : ComponentActivity() {
             csrfToken = csrfToken,
             workspaceRootDir = workspaceRoot,
             hubProxyHandler = hubProxyHandler,
-            initialBackendMode = BackendMode.STANDALONE_IN_APP_BACKEND
+            initialBackendMode = BackendMode.STANDALONE_IN_APP_BACKEND,
+            conversationCache = conversationCache
         )
 
         val syncManager = dev.agentic.core.network.hub.HubDataSyncManager(

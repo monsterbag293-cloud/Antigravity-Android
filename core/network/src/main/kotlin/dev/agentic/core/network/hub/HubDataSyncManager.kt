@@ -137,8 +137,9 @@ class HubDataSyncManager(
                 // 4. Sync Message History for genuine backend conversations only
                 _syncState.value = SyncState.Syncing("Syncing conversation step histories...")
                 var totalSteps = 0
+                val projectIdByConv = conversations.associate { it.id to it.projectId }
                 for (convId in genuineConvIds) {
-                    val stepCount = syncConversationSteps(convId)
+                    val stepCount = syncConversationSteps(convId, projectIdByConv[convId] ?: "outside-of-project")
                     totalSteps += stepCount
                 }
 
@@ -291,7 +292,7 @@ class HubDataSyncManager(
     /**
      * Synchronizes all steps and turns for a given conversation ID via [GetCascadeTrajectorySteps].
      */
-    suspend fun syncConversationSteps(cascadeId: String): Int {
+    suspend fun syncConversationSteps(cascadeId: String, resolvedProjectId: String = "outside-of-project"): Int {
         val payload = "{\"cascadeId\": \"$cascadeId\", \"stepOffset\": 0}"
         val stepsResult = hubConnectionManager.executeUnaryRpc("GetCascadeTrajectorySteps", payload)
 
@@ -372,7 +373,7 @@ class HubDataSyncManager(
                     val trajectoryRecord = CascadeTrajectoryRecord(
                         cascadeId = cascadeId,
                         trajectoryId = "traj-$cascadeId",
-                        projectId = "f62d4d56-8673-4da6-a2c0-458e5e2eb5bd",
+                        projectId = resolvedProjectId,
                         summary = messages.firstOrNull { it.role == Role.USER }?.content?.take(60) ?: "Synced Conversation",
                         status = "CASCADE_RUN_STATUS_IDLE",
                         fullyIdle = true,

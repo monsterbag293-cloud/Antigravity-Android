@@ -34,10 +34,10 @@ class BackendProvisioningManager(private val context: Context) {
         private const val TAG = "BackendProvisioning"
 
         const val OFFICIAL_BACKEND_URL =
-            "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.29.1-5241471524274176/unsigned/language_server-linux-arm64"
+            "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.1-6001966350991360/unsigned/language_server-linux-arm64"
         const val EXPECTED_BACKEND_SHA256 =
-            "79c885734bd7aa10ce116ad7bd5117ca6e552501d9f412ba42c33cbca8610784"
-        const val EXPECTED_BACKEND_SIZE = 188567928L
+            "b27bd4247ae39abcca937ed03813778fd11663bd6c13de34a3432825ec79efdc"
+        const val EXPECTED_BACKEND_SIZE = 226382224L
 
         const val BUFFER_SIZE = 64 * 1024
         const val CONNECT_TIMEOUT_MS = 15000
