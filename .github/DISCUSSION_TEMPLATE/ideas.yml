@@ -1,0 +1,24 @@
+title: "[Idea]: "
+labels: ["idea", "discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share your vision or concept for Antigravity on Android! Discussions are the best place to brainstorm before filing formal feature requests.
+  - type: textarea
+    id: idea_summary
+    attributes:
+      label: "Idea Summary"
+      description: "Briefly explain what your idea is and how it improves the mobile workflow."
+    validations:
+      required: true
+  - type: textarea
+    id: use_cases
+    attributes:
+      label: "Target Use Cases"
+      description: "Who benefits from this? (e.g., coding on tablet, quick prompt testing on phone)"
+  - type: textarea
+    id: ui_concept
+    attributes:
+      label: "UI Concept / Mockup"
+      description: "Attach any sketch, wireframe, or component layout ideas."

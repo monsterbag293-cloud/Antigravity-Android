@@ -1,0 +1,24 @@
+Category,Feature,Desktop Original,Android Status,Mobile Adaptation,Backend RPC,Test Result
+Navigation,Top Menu Bar,Yes,Removed,CSS display:none on [data-testid="title-menu-bar"],None,PASS
+Navigation,Left Sidebar,Yes,Overlay,100% width modal overlay with swipe-to-close,None,PASS
+Navigation,Sidebar Gestures,No,Added,Right-to-left swipe dismiss (no edge-swipe),None,PASS
+Navigation,Conversation Tap,Yes,Adapted,Auto-closes sidebar without auto-focusing keyboard,None,PASS
+Navigation,Settings Dialog,Yes,Full Screen,100% overlay; hide desktop Shortcuts section,None,PASS
+Models,Gemini 4 Argon,Yes,Supported,Medium [New] tag; Argon weekly quota tracking,GetUserStatus,PASS
+Models,Gemini 3.8 Flash,Yes,Supported,High recommendation; Gemini weekly/5h quota,GetUserStatus,PASS
+Models,Claude Opus 5.5,Yes,Supported,Medium [New] tag; Claude/GPT quota group,GetUserStatus,PASS
+Models,Claude Sonnet 5.5,Yes,Supported,Medium [New] tag; Claude/GPT quota group,GetUserStatus,PASS
+Models,GPT-OSS 120B,Yes,Supported,Medium [Notice]; Claude/GPT quota group,GetUserStatus,PASS
+Models,Gemini 4 Carbon,Yes,Supported,Available for Ultra plan subscribers; dynamic enable,GetUserStatus,PASS
+Input,Virtual Keyboard,No,Adaptive,Compose imePadding keeps input above keyboard,None,PASS
+Input,Voice Recording,Yes,Supported,Persistent OkHttp StreamAudioTranscription,StreamAudioTranscription,PASS
+Input,Speech to Text,Yes,Supported,Native SpeechRecognizer bridge to Lexical editor,None,PASS
+Input,Touch Drag-Drop,No,Polyfilled,300ms press-and-hold synthetic drag events,None,PASS
+Projects,Project Picker,Yes,Adapted,Mobile-friendly folder selection/creation modal,None,PASS
+Projects,File Browsing,Yes,Supported,Embedded file tree with syntax highlighting,ReadFile/WriteFile,PASS
+Terminal,Shell Execution,Yes,Supported,Termux com.termux & PRoot sh/bash execution,None,PASS
+Terminal,Environment AI,No,Added,Model awareness: Linux ARM64 POSIX shell,None,PASS
+Sync,Google Account,Yes,Supported,Bidirectional project & conversation sync,RetrieveUserQuotaSummary,PASS
+Sync,Battery Aware,No,Added,Sync deferral when battery < 15% and discharging,None,PASS
+Lifecycle,Auto Backend Setup,No,Added,SettingThingsUpLoadingScreen progress bar,None,PASS
+Display,OLED Pure Black,No,Added,#000000 theme for display power efficiency,None,PASS

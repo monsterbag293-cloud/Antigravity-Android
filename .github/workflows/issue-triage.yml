@@ -1,0 +1,52 @@
+name: Auto Issue Triage & Tagging
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Apply Area and Device Tags
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const title = (issue.title || '').toLowerCase();
+            const body = (issue.body || '').toLowerCase();
+            const labelsToAdd = new Set();
+
+            // Keyword tag mapping
+            if (title.includes('gesture') || body.includes('swipe') || body.includes('drawer') || body.includes('sidebar')) {
+              labelsToAdd.add('area:navigation');
+            }
+            if (title.includes('drag') || body.includes('drag') || body.includes('long-press') || body.includes('reorder')) {
+              labelsToAdd.add('area:drag-drop');
+            }
+            if (title.includes('auth') || title.includes('login') || body.includes('oauth') || body.includes('plugin') || body.includes('google drive')) {
+              labelsToAdd.add('area:auth-plugins');
+            }
+            if (title.includes('font') || body.includes('google sans') || body.includes('loading') || body.includes('splash')) {
+              labelsToAdd.add('area:splash-loading');
+            }
+            if (title.includes('icon') || body.includes('launcher') || body.includes('adaptive icon') || body.includes('foreground')) {
+              labelsToAdd.add('area:branding-icons');
+            }
+            if (body.includes('pixel 10') || body.includes('pixel')) {
+              labelsToAdd.add('device:pixel');
+            }
+            if (body.includes('samsung') || body.includes('galaxy')) {
+              labelsToAdd.add('device:samsung');
+            }
+
+            if (labelsToAdd.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: Array.from(labelsToAdd)
+              });
+            }

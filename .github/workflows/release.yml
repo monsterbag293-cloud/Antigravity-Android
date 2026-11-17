@@ -1,0 +1,75 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - name: Cache Gradle Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
+
+      - name: Assemble Debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Rename APK Asset
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/antigravity-android-${{ github.ref_name }}.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Antigravity for Android ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: true
+          files: dist/antigravity-android-${{ github.ref_name }}.apk
+          body: |
+            ## Antigravity for Android (${{ github.ref_name }} Preview)
+
+            ### Highlights & Fixes
+            - Official Antigravity adaptive launcher icon with safe-zone alignment.
+            - Full-width mobile navigation drawer with live finger tracking and snap physics.
+            - Clean single-conversation mobile rendering (no desktop split views).
+            - Customizations plugin authentication with Chrome Custom Tabs integration.
+            - 2-second stationary long-press threshold for dragging projects and conversations.
+            - Google Sans typography across native splash and loading screens.
+
+            ### Download & Installation
+            Download the attached `antigravity-android-${{ github.ref_name }}.apk` and install directly on your device:
+            ```bash
+            adb install -r antigravity-android-${{ github.ref_name }}.apk
+            ```
+
+            > **Notice**: This is an independent, community-maintained preview compatibility layer not affiliated with or endorsed by Google LLC.

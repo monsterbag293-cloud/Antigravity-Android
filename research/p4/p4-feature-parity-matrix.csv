@@ -1,0 +1,43 @@
+Category,Feature,Desktop Implementation,Android Implementation,Parity Status,Sync Backing,Test Coverage
+Authentication,Google OAuth 2.0 Flow,Electron main process + external browser,PRoot ANTIGRAVITY_VSCODE_HOST + Intent.ACTION_VIEW,PASS,Account-backed,Live Auth Verified
+Authentication,User Status & Gaia Profile,GetUserStatus RPC (language_server.exe),LanguageServerService/GetUserStatus in PRoot,PASS,Account-backed,AuthLoadSyncVerificationTest
+Authentication,Token Refresh & Revocation,OAuth token lifecycle in language_server,Handled inside ARM64 language_server,PASS,Account-backed,Live Backend Verified
+Usage & Limits,Tier Detection,Pro / Ultra / Free plan detection,DesktopModelCatalog + GetUserStatus,PASS,Account-backed,DesktopModelsAndQuotaTest
+Usage & Limits,Quota Grouping,3 canonical groups (Gemini Claude Argon),DesktopModelCatalog.DESKTOP_QUOTA_GROUP_ORDER,PASS,Account-backed,DesktopModelsAndQuotaTest
+Usage & Limits,Reset Timers,5h and weekly countdown meters,DesktopModelCatalog timestamp calculation,PASS,Account-backed,Live Device Verified
+Model Discovery,Model Family Catalog,6 desktop models (Argon Flash Opus Sonnet GPT Carbon),DesktopModelCatalog.DESKTOP_MODELS,PASS,Registry & Account,DesktopModelsAndQuotaTest
+Model Discovery,Gemini 3.8 Flash,MODEL_PLACEHOLDER_M318/M319/M320,Supported with thinking levels,PASS,Account-backed,DesktopModelsAndQuotaTest
+Model Discovery,Gemini 4 Argon,MODEL_PLACEHOLDER_M417/M418/M419,Supported with New badge,PASS,Account-backed,DesktopModelsAndQuotaTest
+Model Discovery,Gemini 4 Carbon,MODEL_PLACEHOLDER_M670 (Ultra plan restricted),Ported with Unavailable tag,PASS,Account-backed,DesktopModelsAndQuotaTest
+Model Discovery,Claude Opus & Sonnet 5.5,MODEL_PLACEHOLDER_M400-M405,Full 3 thinking levels,PASS,Account-backed,DesktopModelsAndQuotaTest
+Model Discovery,GPT-OSS 120B,MODEL_OPENAI_GPT_OSS_120B_MEDIUM,Notice tag + non-image config,PASS,Account-backed,DesktopModelsAndQuotaTest
+Cascade Agent,Prompt Execution,StartCascade RPC + tool calling,Genuine ARM64 language_server in PRoot,PASS,Local + Cloud,GenuineCascadeExecutionTest
+Cascade Agent,Agent State Streaming,Connect-RPC streamAgentStateUpdates,Base64 fetch interceptor + deduplication,PASS,Local Loopback,GenuineCascadeExecutionTest
+Cascade Agent,Tool Calling & Execution,Filesystem & shell tool execution,SandboxedCommandExecutor + LocalFileTools,PASS,Local Sandbox,StageP13TurnaroundTest
+Cascade Agent,Execution Cancellation,CancelCascade RPC,LanguageServerService/CancelCascade,PASS,Local Loopback,GenuineCascadeExecutionTest
+Conversation History,SQLite Trajectories,conversations/<id>.db (steps table),PRoot rootfs conversations/*.db,PASS,Local + Account Sync,AccountSyncManagerTest
+Conversation History,Conversation Summaries,conversation_summaries.db,PRoot conversation_summaries.db,PASS,Local + Account Sync,AccountSyncManagerTest
+Conversation History,FTS5 Global Search,conversations_fts table,SQLite FTS5 virtual table in PRoot,PASS,Local SQLite,AccountSyncManagerTest
+Projects & Workspaces,Project Definitions,~/.gemini/config/projects/<id>.json,/tmp/gemini_app/config/projects/<id>.json,PASS,Local + Account Sync,AccountSyncManagerTest
+Projects & Workspaces,Simplified Mobile Picker,Electron showOpenDialog,Single-step Android Project Modal,PASS,Local Filesystem,Live Device Verified
+Folder Projects,Local Workspace Folders,NTFS directory structures,/tmp/gemini_app/workspaces/<name>,PASS,Local Filesystem,AccountSyncManagerTest
+Folder Projects,Filesystem Path Mapping,Windows file:///c%3A/... paths,Automatic translation to Android paths,PASS,Account Sync Engine,AccountSyncManagerTest
+Folder Projects,SHA-256 File Manifests,File hashing on disk,AccountSyncManager.generateFolderManifest,PASS,Data Integrity Engine,AccountSyncManagerTest
+Folder Projects,Conflict Detection,Timestamps & collision handling,Automatic .conflict file preservation,PASS,Data Integrity Engine,AccountSyncManagerTest
+File Management,File Tree & Browsing,Aux-pane file tree,Jetski Web file explorer + LocalFileTools,PASS,Local PRoot,Live Device Verified
+File Management,File Editor & Highlighting,Monaco / Shiki editor tabs,Shiki web worker + Prism syntax bundle,PASS,Client Web Worker,Live Device Verified
+File Management,File Attachments,Electron file dialog,WebChromeClient.onShowFileChooser (PickActivity),PASS,Android SAF,Live Device Verified
+Terminal & Shell,Command Execution,node-pty on host,Debian bash shell in PRoot userspace,PASS,PRoot Linux Userspace,StageP13TurnaroundTest
+Terminal & Shell,Background Tasks,Task logging in ~/.gemini/brain/<id>/,.system_generated/tasks/ in PRoot rootfs,PASS,PRoot Linux Userspace,Live Device Verified
+Diffs & Review,Myers Diff Engine,diff_worker.js,Packaged diff_worker.js inside APK bundle,PASS,Client Web Worker,Live Device Verified
+Checkpoints,Step Checkpoint & Revert,SQLite steps checkpointing,Identical SQLite step engine in PRoot,PASS,Local SQLite,GenuineCascadeExecutionTest
+Browser Integration,WCV Browser Tabs,wcvBrowser Electron API,window.electronNative.wcvBrowser polyfill,PASS,Android Intent Manager,Live Device Verified
+MCP Integrations,MCP Configuration,~/.gemini/config/mcp_config.json,/tmp/gemini_app/config/mcp_config.json,PASS,Local Config,AuthLoadSyncVerificationTest
+Automations,Sidecar Scheduled Tasks,--enable_sidecars daemon,/sidecars route in Jetski Web,PASS,Daemon Process,Live Device Verified
+Rules & Workflows,Configuration Files,config.json & antigravity_state.pbtxt,PRoot config.json & antigravity_state.pbtxt,PASS,Local Filesystem,AuthLoadSyncVerificationTest
+Settings & Storage,App Storage Key-Value,window.nativeStorage (app_storage.json),window.nativeStorage backed by Android storage,PASS,Local Storage,Live Device Verified
+Notifications,System Notifications,window.nativeNotifications,NotificationManagerCompat channel bridge,PASS,Android Notification,Live Device Verified
+Streaming & Network,gRPC-Web Binary Streaming,Loopback binary stream,In-process base64 fetch codec,PASS,In-process Bridge,GenuineCascadeExecutionTest
+Attachments & Media,Microphone Voice Memos,Chromium audio input,RECORD_AUDIO + MODIFY_AUDIO_SETTINGS,PASS,Android Audio HAL,Live Device Verified
+Interaction & UX,Mobile Layout Adaptation,Desktop multi-pane,Automatic HE() === true mobile layout,PASS,Jetski CSS Engine,Live Device Verified
+Shell Integration,External Link Launching,shell:open-external,Intent(Intent.ACTION_VIEW),PASS,Android OS,Live Device Verified

@@ -1,0 +1,25 @@
+# Gradle build outputs and caches
+.gradle/
+build/
+*/build/
+*.iml
+.idea/
+local.properties
+.DS_Store
+
+# Temporary scratch scripts & logs
+scratch/
+*.log
+
+# Large local caches
+.cxx/
+captures/
+
+# Proprietary upstream binaries, web bundles, and packaged APKs
+*.apk
+dist/
+jetski-bundle.zip
+jetski-web.zip
+language_server
+language_server-*
+language_server.exe
