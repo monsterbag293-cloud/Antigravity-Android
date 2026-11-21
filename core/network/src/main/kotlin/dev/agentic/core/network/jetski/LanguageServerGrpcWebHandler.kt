@@ -1893,6 +1893,12 @@ class LanguageServerGrpcWebHandler(
     private fun handleWriteFile(req: JsonObject): JsonObject {
         val path = req["uri"]?.jsonPrimitive?.content ?: req["path"]?.jsonPrimitive?.content
         val file = resolveSafeWorkspaceFile(path)
+        if (file.exists() && file.isDirectory) {
+            throw GrpcWebProtocolException(
+                GrpcStatus.INVALID_ARGUMENT,
+                "Target path is an existing directory, not a file: ${file.name}"
+            )
+        }
         val overwrite = req["overwrite"]?.jsonPrimitive?.booleanOrNull ?: true
         if (file.exists() && !overwrite) {
             throw GrpcWebProtocolException(

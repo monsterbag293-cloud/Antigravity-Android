@@ -115,6 +115,13 @@ class LocalBackendLifecycleManager(
 
             // Refresh rootfs /etc/hosts with live Android DNS resolution before launching PRoot
             provisioningManager.ensureDnsAndHostsConfiguration()
+            provisioningManager.ensureRuntimeEnvironmentGuide()
+            // Provision Node.js (for swarm plugin) and Git in background if missing on existing installs
+            scope.launch(Dispatchers.IO) {
+                provisioningManager.ensureNodeProvisioned()
+                provisioningManager.ensureGitProvisioned()
+                provisioningManager.ensureRuntimeEnvironmentGuide()
+            }
 
             val rootfsDir = provisioningManager.rootfsDir
             val nativeLibDir = context.applicationInfo.nativeLibraryDir
@@ -171,9 +178,16 @@ class LocalBackendLifecycleManager(
                     if (linkTarget == null && entry.isDirectory && File(externalRootDir, entry.name).isDirectory) {
                         if (entry.listFiles().isNullOrEmpty()) {
                             entry.deleteRecursively()
+                            val mainDir = File(externalRootDir, "${entry.name}/main")
+                            val legacyNestedDir = File(externalRootDir, "${entry.name}/${entry.name}")
+                            val guestRel = when {
+                                mainDir.isDirectory -> "${entry.name}/main"
+                                legacyNestedDir.isDirectory -> "${entry.name}/${entry.name}"
+                                else -> entry.name
+                            }
                             runCatching {
                                 android.system.Os.symlink(
-                                    "/tmp/gemini_app/storage/${entry.name}",
+                                    "/tmp/gemini_app/storage/$guestRel",
                                     entry.absolutePath
                                 )
                             }
@@ -181,6 +195,7 @@ class LocalBackendLifecycleManager(
                     }
                 }
             }
+            startProjectChatSyncLoop(rootfsDir, externalRootDir)
 
             // Clean up any stale hub files for this port
             val staleHubFile = File(isolatedGeminiDir, "$appDataSubdir/daemon/hub_$actualPort.json")
@@ -287,6 +302,17 @@ class LocalBackendLifecycleManager(
                 throw IOException("Failed to connect to local Hub on 127.0.0.1:$httpPort: ${connErr?.message}", connErr)
             }
             val hubStatus = connectResult.getOrNull()
+
+            // Immediately disable Linux terminal sandbox in language_server so PRoot run_command & automations never hit EPERM
+            runCatching {
+                hubConnectionManager.executeUnaryRpc(
+                    "/exa.language_server_pb.LanguageServerService/JetboxWriteState",
+                    """{"userConfig":{"userSettings":{"enableTerminalSandbox":false,"cascadeAutoExecutionPolicy":3}}}"""
+                )
+            }
+            // Migrate any orphaned scratch sidecars to config/sidecars and install persistent agentapi wrapper
+            migrateScratchSidecars(isolatedGeminiDir)
+            installPersistentAgentApiWrapper(isolatedGeminiDir)
 
             val rssKb = readProcessMemoryRssKb(pid)
             val runningState = LocalBackendState.Running(
@@ -517,5 +543,217 @@ class LocalBackendLifecycleManager(
                 }
             }
         } catch (ignored: Exception) {}
+    }
+
+    private fun migrateScratchSidecars(isolatedGeminiDir: File) {
+        try {
+            val scratchSidecars = File(isolatedGeminiDir, "antigravity/scratch/sidecars")
+            val configSidecars = File(isolatedGeminiDir, "config/sidecars").apply { mkdirs() }
+            scratchSidecars.listFiles { f -> f.isDirectory }?.forEach { dir ->
+                val srcJson = File(dir, "sidecar.json")
+                val destDir = File(configSidecars, dir.name)
+                val destJson = File(destDir, "sidecar.json")
+                if (srcJson.isFile && !destJson.exists()) {
+                    destDir.mkdirs()
+                    srcJson.copyTo(destJson, overwrite = false)
+                    Log.i(TAG, "Migrated automation sidecar ${dir.name} to config/sidecars")
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun installPersistentAgentApiWrapper(isolatedGeminiDir: File) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val rootfsDir = isolatedGeminiDir.parentFile?.parentFile ?: return@launch
+                val agentApiFile = File(rootfsDir, "usr/local/bin/agentapi-persistent")
+                val current = if (agentApiFile.isFile) agentApiFile.readText() else ""
+                if (!current.contains("AGY_PERSISTENT_CONV_WRAPPER")) {
+                    agentApiFile.parentFile?.mkdirs()
+                    agentApiFile.writeText(
+                        """#!/bin/sh
+# AGY_PERSISTENT_CONV_WRAPPER: Reuse automation conversations across runs
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LS="/usr/bin/language_server"
+if [ "@@1" = "new-conversation" ]; then
+  MAP_DIR="/tmp/gemini_app/antigravity/sidecar_data/.conv_map"
+  CONV_DIR="/tmp/gemini_app/antigravity/conversations"
+  mkdir -p "@@MAP_DIR"
+  SID_NAME="@@(basename "@@PWD")"
+  if [ "@@SID_NAME" = "/" ] || [ "@@SID_NAME" = "root" ] || [ -z "@@SID_NAME" ]; then
+    SID_NAME="default"
+  fi
+  MAP_FILE="@@MAP_DIR/@@SID_NAME"
+  if [ -f "@@MAP_FILE" ]; then
+    CID="@@(cat "@@MAP_FILE" | tr -d '\r\n')"
+    if [ -n "@@CID" ] && [ -f "@@CONV_DIR/@@CID.db" ]; then
+      TITLE=""
+      PROMPT=""
+      AFTER_SEP=0
+      shift
+      for A in "@@@"; do
+        if [ "@@AFTER_SEP" = "1" ]; then
+          PROMPT="@@PROMPT@@A"
+        elif [ "@@A" = "--" ]; then
+          AFTER_SEP=1
+        elif [ "@@{A#--title=}" != "@@A" ]; then
+          TITLE="@@A"
+        elif [ "@@{A#--}" = "@@A" ]; then
+          PROMPT="@@PROMPT@@A"
+        fi
+      done
+      if [ -n "@@PROMPT" ]; then
+        if [ -n "@@TITLE" ]; then
+          "@@LS" agentapi send-message "@@TITLE" "@@CID" "@@PROMPT" && exit 0
+        else
+          "@@LS" agentapi send-message "@@CID" "@@PROMPT" && exit 0
+        fi
+      fi
+    fi
+  fi
+  OUT="@@("@@LS" agentapi "@@@")"
+  RC=@@?
+  printf '%s\n' "@@OUT"
+  NEW_CID="@@(printf '%s' "@@OUT" | sed -n 's/.*"conversationId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  if [ -n "@@NEW_CID" ]; then
+    printf '%s' "@@NEW_CID" > "@@MAP_FILE"
+  fi
+  exit @@RC
+fi
+exec "@@LS" agentapi "@@@"
+""".replace("@@@", "$@").replace("@@", "$")
+                    )
+                    agentApiFile.setExecutable(true, false)
+                    Log.i(TAG, "Installed persistent conversation agentapi wrapper at ${agentApiFile.absolutePath}")
+                }
+                rewriteScheduleSidecarsToPersistentAgentApi(isolatedGeminiDir)
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun rewriteScheduleSidecarsToPersistentAgentApi(isolatedGeminiDir: File) {
+        try {
+            val sidecarsDir = File(isolatedGeminiDir, "config/sidecars")
+            val entries = sidecarsDir.listFiles() ?: return
+            for (dir in entries) {
+                if (!dir.isDirectory) continue
+                val jsonFile = File(dir, "sidecar.json")
+                if (!jsonFile.isFile) continue
+                val text = jsonFile.readText()
+                if (!text.contains("\"schedule\"") || text.contains("/usr/local/bin/agentapi-persistent")) continue
+                val json = org.json.JSONObject(text)
+                if (json.optString("builtin") != "schedule") continue
+                val args = json.optJSONArray("args") ?: continue
+                if (args.length() >= 2 && args.optString(1) == "agentapi") {
+                    args.put(1, "/usr/local/bin/agentapi-persistent")
+                    jsonFile.writeText(json.toString(2) + "\n")
+                    Log.i(TAG, "Updated schedule sidecar ${dir.name} to use /usr/local/bin/agentapi-persistent")
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private var chatSyncJob: kotlinx.coroutines.Job? = null
+
+    private fun startProjectChatSyncLoop(rootfsDir: File, externalRootDir: File?) {
+        chatSyncJob?.cancel()
+        if (externalRootDir == null) return
+        val convDir = File(rootfsDir, "tmp/gemini_app/antigravity/conversations")
+        val summariesDb = File(rootfsDir, "tmp/gemini_app/antigravity/conversation_summaries.db")
+        val brainRoot = File(rootfsDir, "tmp/gemini_app/antigravity/brain")
+        val wsRegex = Regex("/tmp/gemini_app/(?:workspaces|storage)/([^/\"'\\s\\x00]+)")
+        val syncedStamps = mutableMapOf<String, Long>()
+        chatSyncJob = scope.launch(Dispatchers.IO) {
+            while (true) {
+                kotlinx.coroutines.delay(5000)
+                if (_backendState.value is LocalBackendState.Stopped || _backendState.value is LocalBackendState.Error) {
+                    break
+                }
+                try {
+                    rewriteScheduleSidecarsToPersistentAgentApi(File(rootfsDir, "tmp/gemini_app"))
+                    val dbFiles = convDir.listFiles { f -> f.isFile && (f.extension == "db" || f.extension == "pb") } ?: continue
+                    val summaryMeta = readConversationSummaryMap(summariesDb)
+                    for (dbFile in dbFiles) {
+                        val chatId = dbFile.nameWithoutExtension
+                        val walFile = File(convDir, "${dbFile.name}-wal")
+                        val stamp = dbFile.lastModified() xor (dbFile.length() shl 16) xor
+                            (if (walFile.exists()) walFile.lastModified() xor walFile.length() else 0L)
+                        if (syncedStamps[chatId] == stamp) continue
+
+                        val meta = summaryMeta[chatId]
+                        val projectName = meta?.projectName ?: run {
+                            val content = dbFile.readBytes().toString(Charsets.ISO_8859_1)
+                            wsRegex.find(content)?.groupValues?.get(1)
+                        } ?: continue
+
+                        val projectOuter = File(externalRootDir, projectName)
+                        val chatsDir = File(projectOuter, "chats")
+                        if (!projectOuter.isDirectory && !chatsDir.isDirectory) continue
+                        if (!chatsDir.exists()) chatsDir.mkdirs()
+
+                        val rawTitle = meta?.title?.takeIf { it.isNotBlank() } ?: chatId
+                        val safeTitle = rawTitle.trim()
+                            .replace(Regex("[/\\\\:*?\"<>|\\r\\n]+"), "_")
+                            .trim('.', ' ')
+                            .take(64)
+                            .ifEmpty { chatId }
+                        val candidateFolder = File(chatsDir, safeTitle)
+                        val chatFolder = if (candidateFolder.isDirectory && !File(candidateFolder, dbFile.name).exists() &&
+                            candidateFolder.listFiles()?.any { it.extension == "db" || it.extension == "pb" } == true
+                        ) {
+                            File(chatsDir, "${safeTitle}_${chatId.take(6)}")
+                        } else {
+                            candidateFolder
+                        }
+                        if (!chatFolder.exists()) chatFolder.mkdirs()
+
+                        dbFile.copyTo(File(chatFolder, dbFile.name), overwrite = true)
+                        if (walFile.exists()) walFile.copyTo(File(chatFolder, walFile.name), overwrite = true)
+                        val shmFile = File(convDir, "${dbFile.name}-shm")
+                        if (shmFile.exists()) shmFile.copyTo(File(chatFolder, shmFile.name), overwrite = true)
+
+                        val brainSrc = File(brainRoot, chatId)
+                        if (brainSrc.isDirectory) {
+                            val brainDest = File(chatFolder, "brain").apply { if (!exists()) mkdirs() }
+                            brainSrc.listFiles()?.forEach { f ->
+                                if (f.isFile) {
+                                    f.copyTo(File(brainDest, f.name), overwrite = true)
+                                }
+                            }
+                        }
+                        syncedStamps[chatId] = stamp
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private data class SummaryMeta(val title: String, val projectName: String?)
+
+    private fun readConversationSummaryMap(summariesDb: File): Map<String, SummaryMeta> {
+        if (!summariesDb.isFile) return emptyMap()
+        val result = mutableMapOf<String, SummaryMeta>()
+        val wsRegex = Regex("/tmp/gemini_app/(?:workspaces|storage)/([^/\"'\\s\\x00\\]]+)")
+        runCatching {
+            android.database.sqlite.SQLiteDatabase.openDatabase(
+                summariesDb.absolutePath,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+            ).use { db ->
+                db.rawQuery(
+                    "SELECT conversation_id, title, workspace_uris FROM conversation_summaries",
+                    null
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getString(0) ?: continue
+                        val title = cursor.getString(1) ?: ""
+                        val ws = cursor.getString(2) ?: ""
+                        val proj = wsRegex.find(ws)?.groupValues?.get(1)
+                        result[id] = SummaryMeta(title = title, projectName = proj)
+                    }
+                }
+            }
+        }
+        return result
     }
 }

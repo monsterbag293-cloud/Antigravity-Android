@@ -430,6 +430,9 @@ class JetskiBundleLoader {
               [data-testid="conversation-view"] {
                 touch-action: pan-y !important;
               }
+              [data-testid="autoscroll-viewport"] [style*="cqh"] {
+                min-height: 0 !important;
+              }
               .agy-shell [role="navigation"] {
                 user-select: none !important;
                 -webkit-user-select: none !important;
@@ -447,7 +450,8 @@ class JetskiBundleLoader {
               }
               .agy-shell [data-sidebar-row-id],
               .agy-shell [data-project-card="true"],
-              .agy-shell .bg-sidebar.pt-1 {
+              .agy-shell .bg-sidebar.pt-1,
+              .agy-shell [data-testid="conversation-list-sidebar"] * {
                 touch-action: none !important;
               }
               .agy-shell [role="navigation"] a:focus,
@@ -510,6 +514,9 @@ class JetskiBundleLoader {
                 box-sizing: border-box !important;
                 background-color: var(--background, #000000) !important;
               }
+              .browser-hole-ancestor > .z-20:has([data-testid="sidecar-iframe-slot"][data-visible="true"]) {
+                z-index: 45 !important;
+              }
               .agy-aux-tab {
                 padding-right: 6px !important;
               }
@@ -548,9 +555,21 @@ class JetskiBundleLoader {
               }
               body:not(.dark) .agy-inset-shell,
               body:not(.dark) .agy-sheet[data-sheet-inset],
-              body:not(.dark) [data-testid="mobile-layout"] {
+              body:not(.dark) [data-testid="mobile-layout"],
+              body:not(.dark) [data-testid="sidebar-split"] > .flex:first-child {
                 --shell-canvas: var(--background, #ffffff);
+                --sidebar: var(--background, #ffffff);
                 background-color: var(--background, #ffffff) !important;
+              }
+              [data-testid="sidebar-split"] .bg-gradient-to-b.from-card.to-transparent,
+              [data-testid="sidebar-split"] .bg-gradient-to-t.from-card.to-transparent {
+                display: none !important;
+              }
+              button, [role="button"] {
+                touch-action: manipulation !important;
+              }
+              [role="dialog"] {
+                padding-bottom: 24px !important;
               }
               .compact-tooltip,
               [role="tooltip"] {
@@ -982,6 +1001,17 @@ class JetskiBundleLoader {
                 append("                if (Array.isArray(args[0].requests)) args[0].requests.forEach(patchCascadeSandboxConfig);\n")
                 append("              } else if (methodName === 'jetboxWriteState' && args[0]?.userConfig?.userSettings) {\n")
                 append("                patchUserSettingsObject(args[0].userConfig.userSettings);\n")
+                append("              } else if (methodName === 'installCustomization' && args[0]?.id) {\n")
+                append("                const cid = String(args[0].id);\n")
+                append("                window.__agyInstallingCustomizations = window.__agyInstallingCustomizations || new Map();\n")
+                append("                if (window.__agyInstallingCustomizations.has(cid)) {\n")
+                append("                  return window.__agyInstallingCustomizations.get(cid);\n")
+                append("                }\n")
+                append("                const p = Promise.resolve(orig.apply(this, args)).finally(() => {\n")
+                append("                  window.__agyInstallingCustomizations.delete(cid);\n")
+                append("                });\n")
+                append("                window.__agyInstallingCustomizations.set(cid, p);\n")
+                append("                return p;\n")
                 append("              }\n")
                 append("              if (methodName === 'streamAgentStateUpdates') {\n")
                 append("                const reqArg = args[0] || {};\n")
@@ -1786,6 +1816,12 @@ class JetskiBundleLoader {
                 append("        const sb = document.querySelector('.agy-shell .flex-1 [data-testid=sidebar-split] > .flex:first-child');\n")
                 append("        const isOpen = isSbOpen(sb);\n")
                 append("        document.body.classList.toggle('agy-sidebar-open', isOpen);\n")
+                append("        document.querySelectorAll('button[data-testid=\"sidebar-toggle\"], button[aria-label=\"Toggle Sidebar\"]').forEach((b) => {\n")
+                append("          if (b.hasAttribute('data-tooltip-id')) b.removeAttribute('data-tooltip-id');\n")
+                append("        });\n")
+                append("        document.querySelectorAll('[role=\"tooltip\"], .compact-tooltip').forEach((t) => {\n")
+                append("          if ((t.textContent || '').includes('Toggle Sidebar')) t.style.display = 'none';\n")
+                append("        });\n")
                 append("        const header = document.querySelector('[data-sidebar-section-drop-id=\"main-section-header\"]');\n")
                 append("        if (header && !document.getElementById('agy-projects-local-note')) {\n")
                 append("          const note = document.createElement('div');\n")
@@ -2071,6 +2107,7 @@ class JetskiBundleLoader {
                 append("      let isTouchScrollingChat = false;\n")
                 append("      let userPausedScrollAt = 0;\n")
                 append("      const lastTopMap = new WeakMap();\n")
+                append("      const lastHeightMap = new WeakMap();\n")
                 append("      const origScrollTo = Element.prototype.scrollTo;\n")
                 append("      function isChatViewport(el) {\n")
                 append("        return !!(el && el.getAttribute && el.getAttribute('data-testid') === 'autoscroll-viewport');\n")
@@ -2078,11 +2115,45 @@ class JetskiBundleLoader {
                 append("      function distFromBottom(el) {\n")
                 append("        return Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0) - (el.scrollTop || 0));\n")
                 append("      }\n")
+                append("      function snapViewportToBottom(vp) {\n")
+                append("        if (!vp) return;\n")
+                append("        const maxTop = Math.max(0, (vp.scrollHeight || 0) - (vp.clientHeight || 0));\n")
+                append("        origScrollTo.call(vp, { top: maxTop, behavior: 'auto' });\n")
+                append("      }\n")
+                append("      if (typeof ResizeObserver !== 'undefined') {\n")
+                append("        const ro = new ResizeObserver((entries) => {\n")
+                append("          for (const entry of entries) {\n")
+                append("            const vp = entry.target;\n")
+                append("            if (!isChatViewport(vp)) continue;\n")
+                append("            const prevH = lastHeightMap.has(vp) ? lastHeightMap.get(vp) : vp.clientHeight;\n")
+                append("            const curH = vp.clientHeight;\n")
+                append("            lastHeightMap.set(vp, curH);\n")
+                append("            if (curH > prevH + 40) {\n")
+                append("              const explicit = (window.__agyAllowAutoScrollUntil || 0) > Date.now();\n")
+                append("              if (explicit || (Date.now() - userPausedScrollAt) > 2500) {\n")
+                append("                requestAnimationFrame(() => snapViewportToBottom(vp));\n")
+                append("              }\n")
+                append("            }\n")
+                append("          }\n")
+                append("        });\n")
+                append("        const observeVp = () => {\n")
+                append("          const vp = document.querySelector('[data-testid=\"autoscroll-viewport\"]');\n")
+                append("          if (vp && !vp.__agyRoObserved) {\n")
+                append("            vp.__agyRoObserved = true;\n")
+                append("            lastHeightMap.set(vp, vp.clientHeight);\n")
+                append("            ro.observe(vp);\n")
+                append("          }\n")
+                append("        };\n")
+                append("        new MutationObserver(observeVp).observe(document.documentElement, { childList: true, subtree: true });\n")
+                append("        if (document.readyState !== 'loading') observeVp();\n")
+                append("        else document.addEventListener('DOMContentLoaded', observeVp);\n")
+                append("      }\n")
                 append("      document.addEventListener('touchstart', (e) => {\n")
                 append("        const vp = e.target && e.target.closest ? e.target.closest('[data-testid=\"autoscroll-viewport\"]') : null;\n")
                 append("        if (vp) {\n")
                 append("          isTouchScrollingChat = true;\n")
                 append("          lastTopMap.set(vp, vp.scrollTop);\n")
+                append("          lastHeightMap.set(vp, vp.clientHeight);\n")
                 append("        }\n")
                 append("      }, { capture: true, passive: true });\n")
                 append("      document.addEventListener('touchmove', (e) => {\n")
@@ -2098,17 +2169,24 @@ class JetskiBundleLoader {
                 append("      document.addEventListener('scroll', (e) => {\n")
                 append("        const vp = e.target;\n")
                 append("        if (!isChatViewport(vp)) return;\n")
+                append("        const prevH = lastHeightMap.has(vp) ? lastHeightMap.get(vp) : vp.clientHeight;\n")
+                append("        const curH = vp.clientHeight;\n")
+                append("        if (curH !== prevH) {\n")
+                append("          lastHeightMap.set(vp, curH);\n")
+                append("          lastTopMap.set(vp, vp.scrollTop);\n")
+                append("          return;\n")
+                append("        }\n")
                 append("        const prev = lastTopMap.has(vp) ? lastTopMap.get(vp) : vp.scrollTop;\n")
                 append("        const cur = vp.scrollTop;\n")
                 append("        lastTopMap.set(vp, cur);\n")
-                append("        if (cur < prev - 2 || distFromBottom(vp) > 36) {\n")
+                append("        if (isTouchScrollingChat && (cur < prev - 2 || distFromBottom(vp) > 36)) {\n")
                 append("          userPausedScrollAt = Date.now();\n")
                 append("        }\n")
                 append("      }, { capture: true, passive: true });\n")
                 append("      document.addEventListener('click', (e) => {\n")
-                append("        if (e.target && e.target.closest && e.target.closest('.agy-scroll-bottom')) {\n")
+                append("        if (e.target && e.target.closest && (e.target.closest('.agy-scroll-bottom') || e.target.closest('[aria-label=\"Send message\"]'))) {\n")
                 append("          userPausedScrollAt = 0;\n")
-                append("          window.__agyAllowAutoScrollUntil = Date.now() + 1500;\n")
+                append("          window.__agyAllowAutoScrollUntil = Date.now() + 2500;\n")
                 append("        }\n")
                 append("      }, true);\n")
                 append("      Element.prototype.scrollTo = function(arg1, arg2) {\n")
@@ -2125,6 +2203,135 @@ class JetskiBundleLoader {
                 append("        }\n")
                 append("        return origScrollTo.apply(this, arguments);\n")
                 append("      };\n")
+                append("    })();\n")
+                append("    (function setupSidebarLongPressDrag() {\n")
+                append("      if (window.__agySidebarLongPressInstalled) return;\n")
+                append("      window.__agySidebarLongPressInstalled = true;\n")
+                append("      let holdTimer = null;\n")
+                append("      let pending = null;\n")
+                append("      let scrolling = null;\n")
+                append("      let dragUnlocked = false;\n")
+                append("      let momentumRaf = null;\n")
+                append("      function stopMomentum() {\n")
+                append("        if (momentumRaf !== null) { cancelAnimationFrame(momentumRaf); momentumRaf = null; }\n")
+                append("      }\n")
+                append("      function clearPending() {\n")
+                append("        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n")
+                append("        pending = null;\n")
+                append("      }\n")
+                append("      function startMomentum(scrollBox, velocityPxPerMs) {\n")
+                append("        stopMomentum();\n")
+                append("        if (!scrollBox || Math.abs(velocityPxPerMs) < 0.15) return;\n")
+                append("        let v = Math.max(-4.5, Math.min(4.5, velocityPxPerMs));\n")
+                append("        let lastTs = performance.now();\n")
+                append("        function step(now) {\n")
+                append("          const dt = Math.min(32, now - lastTs);\n")
+                append("          lastTs = now;\n")
+                append("          const prev = scrollBox.scrollTop;\n")
+                append("          scrollBox.scrollTop = prev - v * dt;\n")
+                append("          v *= Math.pow(0.95, dt / 16);\n")
+                append("          if (Math.abs(v) > 0.03 && scrollBox.scrollTop !== prev) {\n")
+                append("            momentumRaf = requestAnimationFrame(step);\n")
+                append("          } else {\n")
+                append("            momentumRaf = null;\n")
+                append("          }\n")
+                append("        }\n")
+                append("        momentumRaf = requestAnimationFrame(step);\n")
+                append("      }\n")
+                append("      document.addEventListener('pointerdown', function(e) {\n")
+                append("        if (e.__agyAllowPointerDown) return;\n")
+                append("        if (e.pointerType === 'mouse') return;\n")
+                append("        const target = e.target;\n")
+                append("        if (!target || typeof target.closest !== 'function') return;\n")
+                append("        const sidebar = target.closest('[data-testid=\"conversation-list-sidebar\"], [role=\"navigation\"]');\n")
+                append("        if (!sidebar) return;\n")
+                append("        if (target.closest('input, textarea, select, [aria-haspopup]')) return;\n")
+                append("        stopMomentum();\n")
+                append("        clearPending();\n")
+                append("        scrolling = null;\n")
+                append("        dragUnlocked = false;\n")
+                append("        e.stopPropagation();\n")
+                append("        const info = {\n")
+                append("          target: target,\n")
+                append("          pointerId: e.pointerId,\n")
+                append("          pointerType: e.pointerType || 'touch',\n")
+                append("          clientX: e.clientX,\n")
+                append("          clientY: e.clientY,\n")
+                append("          screenX: e.screenX,\n")
+                append("          screenY: e.screenY,\n")
+                append("          scrollBox: target.closest('.overflow-y-auto') || sidebar\n")
+                append("        };\n")
+                append("        pending = info;\n")
+                append("        holdTimer = setTimeout(function() {\n")
+                append("          if (!pending || pending.pointerId !== info.pointerId) return;\n")
+                append("          pending = null;\n")
+                append("          holdTimer = null;\n")
+                append("          dragUnlocked = true;\n")
+                append("          try { if (navigator.vibrate) navigator.vibrate(20); } catch (_) {}\n")
+                append("          try {\n")
+                append("            const syn = new PointerEvent('pointerdown', {\n")
+                append("              bubbles: true,\n")
+                append("              cancelable: true,\n")
+                append("              isPrimary: true,\n")
+                append("              view: window,\n")
+                append("              pointerId: info.pointerId,\n")
+                append("              pointerType: info.pointerType,\n")
+                append("              button: 0,\n")
+                append("              buttons: 1,\n")
+                append("              clientX: info.clientX,\n")
+                append("              clientY: info.clientY,\n")
+                append("              screenX: info.screenX,\n")
+                append("              screenY: info.screenY\n")
+                append("            });\n")
+                append("            syn.__agyAllowPointerDown = true;\n")
+                append("            info.target.dispatchEvent(syn);\n")
+                append("          } catch (_) {}\n")
+                append("        }, 380);\n")
+                append("      }, true);\n")
+                append("      document.addEventListener('pointermove', function(e) {\n")
+                append("        if (dragUnlocked) return;\n")
+                append("        if (scrolling && e.pointerId === scrolling.pointerId) {\n")
+                append("          const dy = e.clientY - scrolling.lastY;\n")
+                append("          const now = performance.now();\n")
+                append("          const dt = Math.max(1, now - scrolling.lastTs);\n")
+                append("          scrolling.velocity = 0.7 * (dy / dt) + 0.3 * scrolling.velocity;\n")
+                append("          scrolling.lastY = e.clientY;\n")
+                append("          scrolling.lastTs = now;\n")
+                append("          if (scrolling.scrollBox) scrolling.scrollBox.scrollTop -= dy;\n")
+                append("          e.stopPropagation();\n")
+                append("          return;\n")
+                append("        }\n")
+                append("        if (!pending || e.pointerId !== pending.pointerId) return;\n")
+                append("        if (Math.hypot(e.clientX - pending.clientX, e.clientY - pending.clientY) > 8) {\n")
+                append("          const p = pending;\n")
+                append("          clearPending();\n")
+                append("          scrolling = {\n")
+                append("            pointerId: p.pointerId,\n")
+                append("            scrollBox: p.scrollBox,\n")
+                append("            lastY: e.clientY,\n")
+                append("            lastTs: performance.now(),\n")
+                append("            velocity: 0,\n")
+                append("            moved: true\n")
+                append("          };\n")
+                append("          if (scrolling.scrollBox) {\n")
+                append("            scrolling.scrollBox.scrollTop -= (e.clientY - p.clientY);\n")
+                append("          }\n")
+                append("          e.stopPropagation();\n")
+                append("        }\n")
+                append("      }, true);\n")
+                append("      function finishTouch(e) {\n")
+                append("        if (pending && e.pointerId === pending.pointerId) clearPending();\n")
+                append("        if (scrolling && e.pointerId === scrolling.pointerId) {\n")
+                append("          const s = scrolling;\n")
+                append("          scrolling = null;\n")
+                append("          if (s.moved) {\n")
+                append("            startMomentum(s.scrollBox, s.velocity);\n")
+                append("          }\n")
+                append("        }\n")
+                append("        if (dragUnlocked) dragUnlocked = false;\n")
+                append("      }\n")
+                append("      document.addEventListener('pointerup', finishTouch, true);\n")
+                append("      document.addEventListener('pointercancel', finishTouch, true);\n")
                 append("    })();\n")
                 append("  }\n")
             }

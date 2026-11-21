@@ -246,10 +246,14 @@ fun JetskiWebViewHost(
                 allowContentAccess = true
                 mediaPlaybackRequiresUserGesture = false
                 cacheMode = WebSettings.LOAD_DEFAULT
-                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     isAlgorithmicDarkeningAllowed = false
                 }
+            }
+            runCatching {
+                android.webkit.CookieManager.getInstance().setAcceptCookie(true)
+                android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             }
 
             addJavascriptInterface(
@@ -435,40 +439,63 @@ fun JetskiWebViewHost(
 
                     @JavascriptInterface
                     fun sendNotification(title: String, body: String, silent: Boolean, payloadJson: String) {
-                        try {
-                            val notificationManager = ContextCompat.getSystemService(context, NotificationManager::class.java)
-                            if (notificationManager != null) {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    val channel = NotificationChannel(
-                                        "antigravity_notifications",
-                                        "Antigravity Alerts",
-                                        if (silent) NotificationManager.IMPORTANCE_LOW else NotificationManager.IMPORTANCE_DEFAULT
+                        Thread({
+                            try {
+                                val parsedPayload = runCatching { org.json.JSONObject(payloadJson) }.getOrNull()
+                                val cascadeId = parsedPayload?.optString("cascadeId").orEmpty()
+                                val notifType = parsedPayload?.optString("type").orEmpty()
+                                // Note: Frontend sets payload.type = "request_action" on both permission prompts
+                                // and "agent-finished-*" notifications. Identify completion notifications by body/title.
+                                val isAgentFinished = notifType != "request_action" ||
+                                    body.startsWith("Agent finished") ||
+                                    title == "Antigravity" ||
+                                    title == "Jetski"
+                                var resolvedTitle = title
+                                var resolvedBody = body
+                                if (cascadeId.isNotBlank() && isAgentFinished) {
+                                    val assistantText = rpcHandler?.hubProxyHandler?.connectionManager
+                                        ?.fetchLatestAssistantMessageBlocking(cascadeId)
+                                    if (!assistantText.isNullOrBlank()) {
+                                        val cleanSummary = body.removePrefix("Agent finished:").trim()
+                                        if (cleanSummary.isNotBlank()) resolvedTitle = cleanSummary
+                                        resolvedBody = assistantText
+                                    }
+                                }
+                                val notificationManager = ContextCompat.getSystemService(context, NotificationManager::class.java)
+                                if (notificationManager != null) {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        val channel = NotificationChannel(
+                                            "antigravity_notifications",
+                                            "Antigravity Alerts",
+                                            if (silent) NotificationManager.IMPORTANCE_LOW else NotificationManager.IMPORTANCE_DEFAULT
+                                        )
+                                        notificationManager.createNotificationChannel(channel)
+                                    }
+                                    val intent = Intent(context, dev.agentic.workspace.MainActivity::class.java).apply {
+                                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                        putExtra("notification_payload", payloadJson)
+                                    }
+                                    val pendingIntent = PendingIntent.getActivity(
+                                        context,
+                                        0,
+                                        intent,
+                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                                     )
-                                    notificationManager.createNotificationChannel(channel)
+                                    val notification = NotificationCompat.Builder(context, "antigravity_notifications")
+                                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                                        .setContentTitle(resolvedTitle)
+                                        .setContentText(resolvedBody)
+                                        .setStyle(NotificationCompat.BigTextStyle().bigText(resolvedBody))
+                                        .setPriority(if (silent) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_DEFAULT)
+                                        .setAutoCancel(true)
+                                        .setContentIntent(pendingIntent)
+                                        .build()
+                                    notificationManager.notify((System.currentTimeMillis() % 100000).toInt(), notification)
                                 }
-                                val intent = Intent(context, dev.agentic.workspace.MainActivity::class.java).apply {
-                                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                    putExtra("notification_payload", payloadJson)
-                                }
-                                val pendingIntent = PendingIntent.getActivity(
-                                    context,
-                                    0,
-                                    intent,
-                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                                )
-                                val notification = NotificationCompat.Builder(context, "antigravity_notifications")
-                                    .setSmallIcon(android.R.drawable.ic_dialog_info)
-                                    .setContentTitle(title)
-                                    .setContentText(body)
-                                    .setPriority(if (silent) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_DEFAULT)
-                                    .setAutoCancel(true)
-                                    .setContentIntent(pendingIntent)
-                                    .build()
-                                notificationManager.notify((System.currentTimeMillis() % 100000).toInt(), notification)
+                            } catch (e: Exception) {
+                                Log.w("JetskiWebViewHost", "Notification send failed: ${e.message}")
                             }
-                        } catch (e: Exception) {
-                            Log.w("JetskiWebViewHost", "Notification send failed: ${e.message}")
-                        }
+                        }, "agy-notif-sender").start()
                     }
 
                     @JavascriptInterface

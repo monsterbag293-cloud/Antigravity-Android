@@ -80,20 +80,37 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
 
         fun resolveRealProjectDirectory(context: Context, sanitizedName: String): File {
             val mainDirCandidate = File(Environment.getExternalStorageDirectory(), sanitizedName)
-            if (mainDirCandidate.exists()) return mainDirCandidate
+            if (mainDirCandidate.exists()) {
+                val mainSub = File(mainDirCandidate, "main")
+                if (mainSub.isDirectory) return mainSub
+                val legacyNested = File(mainDirCandidate, sanitizedName)
+                return if (legacyNested.isDirectory) legacyNested else mainDirCandidate
+            }
             val downloadsCandidate = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 "Antigravity/workspaces/$sanitizedName"
             )
-            if (downloadsCandidate.exists()) return downloadsCandidate
+            if (downloadsCandidate.exists()) {
+                val mainSub = File(downloadsCandidate, "main")
+                if (mainSub.isDirectory) return mainSub
+                val legacyNested = File(downloadsCandidate, sanitizedName)
+                return if (legacyNested.isDirectory) legacyNested else downloadsCandidate
+            }
             val parent = resolveWorkspacesRoot(context)
-            return File(parent, sanitizedName)
+            val outer = File(parent, sanitizedName)
+            val mainSub = File(outer, "main")
+            if (mainSub.isDirectory) return mainSub
+            val legacyNested = File(outer, sanitizedName)
+            return if (legacyNested.isDirectory) legacyNested else outer
         }
 
         fun createAndLinkProjectFolder(context: Context, sanitizedName: String): File {
             val parent = resolveWorkspacesRoot(context)
-            val realTarget = File(parent, sanitizedName)
+            val outerDir = File(parent, sanitizedName)
+            val realTarget = File(outerDir, "main")
+            val chatsDir = File(outerDir, "chats")
             if (!realTarget.exists()) realTarget.mkdirs()
+            if (!chatsDir.exists()) chatsDir.mkdirs()
 
             val internalDir = resolveInternalWorkspacesDir(context)
             val linkFile = File(internalDir, sanitizedName)
@@ -343,7 +360,7 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
             target.mkdirs()
         } else {
             target.parentFile?.mkdirs()
-            target.createNewFile()
+            if (!target.exists()) target.createNewFile()
         }
         return if (parentDocumentId == ROOT_DOC_ID) target.name else "$parentDocumentId/${target.name}"
     }

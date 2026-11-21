@@ -585,19 +585,6 @@ fun SetupWizardScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            TextButton(
-                onClick = onSkipToFallback,
-                enabled = !isWorking
-            ) {
-                Text(
-                    text = "Continue without runtime (Remote Hub / Fallback)",
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = googleSans),
-                    color = AgMutedText
-                )
-            }
-
             Spacer(modifier = Modifier.height(8.dp))
 
             // Unofficial disclaimer & open-source notices

@@ -93,6 +93,12 @@ class JetskiWebViewRequestInterceptor(
 
         val origin = "${parsedUri.scheme ?: ""}://${parsedUri.authority ?: ""}".lowercase()
         if (origin != virtualOrigin.lowercase()) {
+            if (method.equals("GET", ignoreCase = true) &&
+                parsedUri.scheme.equals("http", ignoreCase = true) &&
+                (parsedUri.host == "localhost" || parsedUri.host == "127.0.0.1")
+            ) {
+                return interceptLoopbackSidecarAsset(url, parsedUri.host ?: "localhost", parsedUri.port, parsedUri.path ?: "", headers)
+            }
             return null
         }
 
@@ -213,6 +219,83 @@ class JetskiWebViewRequestInterceptor(
             ),
             body = asset.bytes
         )
+    }
+
+    private val sidecarCookies = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun interceptLoopbackSidecarAsset(
+        url: String,
+        host: String,
+        port: Int,
+        path: String,
+        headers: Map<String, String>
+    ): InterceptedWebResponse? {
+        val ext = path.substringAfterLast('.', "").lowercase()
+        val mime = when {
+            path == "/" || path.isEmpty() || ext == "html" || ext == "htm" -> "text/html"
+            ext == "js" || ext == "mjs" -> "application/javascript"
+            ext == "css" -> "text/css"
+            ext == "json" -> "application/json"
+            ext == "svg" -> "image/svg+xml"
+            ext == "png" -> "image/png"
+            ext == "gif" -> "image/gif"
+            ext == "jpg" || ext == "jpeg" -> "image/jpeg"
+            ext == "woff2" -> "font/woff2"
+            ext == "woff" -> "font/woff"
+            path.startsWith("/api/") -> "application/json"
+            else -> return null
+        }
+        val cookieKey = "$host:$port"
+        return try {
+            val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 5000
+                readTimeout = 5000
+                requestMethod = "GET"
+                val reqCookie = headers.entries.firstOrNull { it.key.equals("cookie", ignoreCase = true) }?.value
+                    ?: sidecarCookies[cookieKey]
+                    ?: runCatching { android.webkit.CookieManager.getInstance()?.getCookie(url) }.getOrNull()
+                if (!reqCookie.isNullOrBlank()) {
+                    setRequestProperty("Cookie", reqCookie)
+                }
+                val reqAuth = headers.entries.firstOrNull { it.key.equals("authorization", ignoreCase = true) }?.value
+                if (!reqAuth.isNullOrBlank()) {
+                    setRequestProperty("Authorization", reqAuth)
+                }
+            }
+            val code = conn.responseCode
+            val setCookies = conn.headerFields.entries
+                .firstOrNull { it.key.equals("set-cookie", ignoreCase = true) }
+                ?.value
+            if (!setCookies.isNullOrEmpty()) {
+                val pairs = setCookies.mapNotNull { it.substringBefore(';').trim().takeIf { p -> p.contains('=') } }
+                if (pairs.isNotEmpty()) {
+                    sidecarCookies[cookieKey] = pairs.joinToString("; ")
+                }
+                runCatching {
+                    val cm = android.webkit.CookieManager.getInstance()
+                    setCookies.forEach { sc -> cm?.setCookie(url, sc) }
+                    cm?.flush()
+                }
+            }
+            val bytes = (if (code in 200..299) conn.inputStream else conn.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
+            conn.disconnect()
+            val finalMime = conn.contentType?.substringBefore(';')?.trim()?.takeIf {
+                it.isNotBlank() && it != "text/plain"
+            } ?: mime
+            InterceptedWebResponse(
+                statusCode = code,
+                reasonPhrase = httpReasonPhrase(code),
+                mimeType = finalMime,
+                encoding = if (finalMime.startsWith("text/") || finalMime == "application/javascript" || finalMime == "application/json" || finalMime == "image/svg+xml") "utf-8" else null,
+                headers = mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-cache"
+                ),
+                body = bytes
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun resolveRequestBody(headers: Map<String, String>, rawBody: ByteArray?): ByteArray {

@@ -351,6 +351,40 @@ class RemoteHubConnectionManager(
         return builder.build()
     }
 
+    /**
+     * Fetches the latest assistant `plannerResponse` text for [cascadeId] via `GetCascadeTrajectorySteps`.
+     */
+    fun fetchLatestAssistantMessageBlocking(cascadeId: String): String? {
+        val config = activeConfig ?: return null
+        val client = activeHttpClient ?: return null
+        if (cascadeId.isBlank()) return null
+        return try {
+            val req = Request.Builder()
+                .url("${config.baseUrl}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectorySteps")
+                .post("""{"cascadeId":"$cascadeId"}""".toRequestBody(MEDIA_TYPE_JSON))
+                .header(HEADER_CSRF_TOKEN, config.csrfToken)
+                .header(HEADER_CONNECT_PROTOCOL, "1")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val raw = resp.body?.string() ?: return null
+                val obj = json.parseToJsonElement(raw).jsonObject
+                val steps = obj["steps"]?.jsonArray ?: return null
+                for (i in steps.size - 1 downTo 0) {
+                    val step = steps[i].jsonObject
+                    val pr = step["plannerResponse"] as? kotlinx.serialization.json.JsonObject ?: continue
+                    val text = pr["response"]?.jsonPrimitive?.content
+                        ?.takeIf { it.isNotBlank() }
+                        ?: pr["modifiedResponse"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                    if (!text.isNullOrBlank()) return text.trim()
+                }
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun isLoopbackHost(host: String): Boolean {
         return host.equals("127.0.0.1", ignoreCase = true) ||
             host.equals("localhost", ignoreCase = true) ||

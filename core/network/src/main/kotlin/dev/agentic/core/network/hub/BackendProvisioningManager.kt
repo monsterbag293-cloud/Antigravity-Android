@@ -49,6 +49,9 @@ class BackendProvisioningManager(private val context: Context) {
 
         const val PYTHON_STANDALONE_URL =
             "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+        const val NODE_STANDALONE_URL =
+            "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-arm64.tar.gz"
+        private const val NODE_DIR_NAME = "node-v22.14.0-linux-arm64"
 
         private val HUB_TARBALL_REGEX = Regex(
             """https://storage\.googleapis\.com/antigravity-public/antigravity-hub/([^/"']+)/linux-arm/Antigravity\.tar\.gz"""
@@ -172,8 +175,10 @@ class BackendProvisioningManager(private val context: Context) {
             // 1.2 Ensure static hosts and DNS configuration for unprivileged PRoot networking
             ensureDnsAndHostsConfiguration()
 
-            // 1.3 Ensure Python 3 ARM64 runtime is provisioned inside rootfs (non-fatal if offline)
+            // 1.3 Ensure Python 3, Node.js, and Git ARM64 runtimes are provisioned inside rootfs (non-fatal if offline)
             ensurePythonProvisioned(onProgress)
+            ensureNodeProvisioned(onProgress)
+            ensureGitProvisioned(onProgress)
 
             // 2. Check if destination binary is already valid
             if (!forceRedownload && downloadUrlOverride.isNullOrBlank() && isValidArm64LanguageServer(backendBinary)) {
@@ -684,6 +689,8 @@ class BackendProvisioningManager(private val context: Context) {
                 "developerconnect.googleapis.com" to "142.250.70.170",
                 "cloudaicompanion.googleapis.com" to "142.250.70.170",
                 "generativelanguage.googleapis.com" to "142.250.70.170",
+                "deb.debian.org" to "151.101.2.132",
+                "security.debian.org" to "151.101.2.132",
                 "antigravity.googleapis.com" to "142.250.70.170",
                 "storage.googleapis.com" to "142.250.70.187"
             )
@@ -710,6 +717,21 @@ class BackendProvisioningManager(private val context: Context) {
             }
             resolvConf.writeText(resolvContent)
             Log.i(TAG, "Provisioned /etc/hosts and /etc/resolv.conf in rootfs")
+            val mimeTypesFile = File(etcDir, "mime.types")
+            if (!mimeTypesFile.exists()) {
+                mimeTypesFile.writeText(
+                    "application/javascript js mjs\n" +
+                        "text/css css\n" +
+                        "text/html html htm\n" +
+                        "application/json json\n" +
+                        "image/svg+xml svg\n" +
+                        "image/png png\n" +
+                        "image/jpeg jpg jpeg\n" +
+                        "image/gif gif\n" +
+                        "font/woff2 woff2\n" +
+                        "font/woff woff\n"
+                )
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to provision rootfs DNS/hosts config: ${e.message}")
         }
@@ -772,8 +794,119 @@ class BackendProvisioningManager(private val context: Context) {
         }
     }
 
+    /**
+     * Downloads and extracts a standalone ARM64 Node.js runtime into `/usr/local/node-*`
+     * and symlinks `/usr/bin/node`, `/usr/bin/npm`, and `/usr/bin/npx` so built-in plugins
+     * (such as `swarm`) work out of the box.
+     */
+    fun ensureNodeProvisioned(onProgress: ((ProvisioningStatus.Progress) -> Unit)? = null) {
+        val nodeInstallDir = File(rootfsDir, "usr/local/$NODE_DIR_NAME")
+        val nodeExec = File(nodeInstallDir, "bin/node")
+        val usrBinDir = File(rootfsDir, "usr/bin")
+        val usrBinNode = File(usrBinDir, "node")
+        val hasNodeLink = usrBinNode.exists() || runCatching { Os.lstat(usrBinNode.absolutePath) }.isSuccess
+        if (nodeExec.exists() && hasNodeLink) {
+            return
+        }
+
+        val tempArchive = File(context.cacheDir, "node-arm64.tar.gz.tmp")
+        try {
+            if (!nodeExec.exists()) {
+                onProgress?.invoke(
+                    ProvisioningStatus.Progress("Node.js", 38, "Downloading Node.js ARM64 runtime...")
+                )
+                downloadWithRedirects(NODE_STANDALONE_URL, tempArchive) { pct ->
+                    onProgress?.invoke(
+                        ProvisioningStatus.Progress("Node.js", 38, "Downloading Node.js runtime: $pct%")
+                    )
+                }
+                onProgress?.invoke(
+                    ProvisioningStatus.Progress("Node.js", 39, "Extracting Node.js runtime...")
+                )
+                File(rootfsDir, "usr/local").mkdirs()
+                java.util.zip.GZIPInputStream(tempArchive.inputStream().buffered()).use { gzis ->
+                    extractTarArchive(gzis, File(rootfsDir, "usr/local"))
+                }
+            }
+            if (nodeExec.exists()) {
+                File(nodeInstallDir, "bin").listFiles()?.forEach { it.setExecutable(true, false) }
+                usrBinDir.mkdirs()
+                for (tool in listOf("node", "npm", "npx")) {
+                    val binFile = File(nodeInstallDir, "bin/$tool")
+                    if (binFile.exists()) {
+                        createPosixSymlink("/usr/local/$NODE_DIR_NAME/bin/$tool", File(usrBinDir, tool))
+                    }
+                }
+                Log.i(TAG, "Provisioned standalone Node.js runtime at ${nodeExec.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Node.js provisioning failed (non-fatal): ${e.message}")
+        } finally {
+            if (tempArchive.exists()) tempArchive.delete()
+        }
+    }
+
+    /**
+     * Installs Debian `git` inside the PRoot rootfs via `apt-get` (with sandbox disabled)
+     * so users can clone and manage Git repositories locally on device.
+     */
+    fun ensureGitProvisioned(onProgress: ((ProvisioningStatus.Progress) -> Unit)? = null) {
+        val gitExec = File(rootfsDir, "usr/bin/git")
+        if (gitExec.exists()) {
+            return
+        }
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val prootBin = File(nativeLibDir, "libproot.so")
+        if (!prootBin.exists()) {
+            Log.w(TAG, "Skipping git provisioning: libproot.so not found at ${prootBin.absolutePath}")
+            return
+        }
+        try {
+            ensureDnsAndHostsConfiguration()
+            val loaderBin = File(nativeLibDir, "libproot_loader.so")
+            onProgress?.invoke(
+                ProvisioningStatus.Progress("Git", 39, "Installing Git inside Debian runtime...")
+            )
+            val cmd = listOf(
+                prootBin.absolutePath,
+                "-0",
+                "-r", rootfsDir.absolutePath,
+                "-b", "/dev",
+                "-b", "/proc",
+                "-w", "/root",
+                "/bin/sh",
+                "-c",
+                "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; " +
+                    "chmod -R u+rwX /var/lib/dpkg 2>/dev/null || true; " +
+                    "apt-get -o APT::Sandbox::User=root update && " +
+                    "DEBIAN_FRONTEND=noninteractive apt-get -o APT::Sandbox::User=root install -y --no-install-recommends git"
+            )
+            val pb = ProcessBuilder(cmd).redirectErrorStream(true)
+            pb.environment().apply {
+                put("LD_LIBRARY_PATH", nativeLibDir)
+                if (loaderBin.exists()) put("PROOT_LOADER", loaderBin.absolutePath)
+                put("PROOT_TMP_DIR", tmpDir.apply { mkdirs() }.absolutePath)
+                put("PROOT_NO_SECCOMP", "1")
+            }
+            val proc = pb.start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val finished = proc.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                Log.w(TAG, "Git provisioning timed out")
+            } else if (proc.exitValue() != 0) {
+                Log.w(TAG, "Git provisioning exited ${proc.exitValue()}: ${output.takeLast(400)}")
+            } else {
+                Log.i(TAG, "Provisioned git inside PRoot at ${gitExec.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Git provisioning failed (non-fatal): ${e.message}")
+        }
+    }
+
     private fun createPosixSymlink(target: String, linkFile: File) {
         try {
+            runCatching { Os.remove(linkFile.absolutePath) }
             if (linkFile.exists()) linkFile.delete()
             Os.symlink(target, linkFile.absolutePath)
         } catch (e: Exception) {
@@ -828,5 +961,66 @@ class BackendProvisioningManager(private val context: Context) {
             return
         }
         throw IOException("Too many redirects downloading $rawUrl")
+    }
+
+    /**
+     * Dynamically discovers installed tools/runtimes inside the PRoot rootfs and writes
+     * verified environment instructions to `/tmp/gemini_app/GEMINI.md` and
+     * `/tmp/gemini_app/antigravity/GEMINI.md` so the AI knows its exact Android PRoot
+     * capabilities, paths, and limitations without searching the filesystem.
+     */
+    fun ensureRuntimeEnvironmentGuide() {
+        try {
+            fun hasBin(guestPath: String): Boolean {
+                val f = File(rootfsDir, guestPath.trimStart('/'))
+                return f.exists() || runCatching { Os.lstat(f.absolutePath) }.isSuccess
+            }
+            val pythonStatus = if (hasBin("/usr/bin/python3")) {
+                "Installed at `/usr/bin/python3` (standalone CPython 3.12 at `/usr/local/python/bin/python3`, packages via `/usr/bin/pip3`)."
+            } else {
+                "Not yet installed."
+            }
+            val nodeStatus = if (hasBin("/usr/bin/node")) {
+                "Installed at `/usr/bin/node` (Node.js v22 ARM64; `npm` at `/usr/bin/npm`, `npx` at `/usr/bin/npx`)."
+            } else {
+                "Not yet installed."
+            }
+            val gitStatus = if (hasBin("/usr/bin/git")) {
+                "Installed at `/usr/bin/git` (HTTPS cloning supported)."
+            } else {
+                "Not yet installed."
+            }
+            val bashStatus = if (hasBin("/bin/bash")) "`/bin/bash` (and `/bin/sh`)" else "`/bin/sh`"
+
+            val guide = buildString {
+                append("# Execution Environment: Android PRoot (Debian 12 ARM64)\n")
+                append("- **Direct Command Execution**: Android PRoot cannot create nested namespaces or execute sandboxed sub-wrappers (`EPERM`). All shell executions with `run_command` MUST use `BypassSandbox: true` by default.\n")
+                append("- **Do Not Attempt Sandboxed Mode First**: Do not try `BypassSandbox: false` or standard sandbox wrappers, as every invocation will abort with `operation not permitted`.\n")
+                append("- **Environment**: Single unprivileged user space. Python (`/usr/bin/python3`), Node.js (`/usr/bin/node`), and standard coreutils are directly accessible in `/bin`/`/usr/bin`.\n\n")
+                append("## Command Execution\n")
+                append("- Use `run_command` with `BypassSandbox: true` and `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`. Shell: $bashStatus.\n")
+                append("- **Do NOT use Linux sandboxing, `unshare`, Docker, `systemd`, or `sudo`** — Android PRoot blocks namespace creation (`EPERM`).\n")
+                append("- Python: $pythonStatus\n")
+                append("- Node.js: $nodeStatus\n")
+                append("- Git: $gitStatus\n\n")
+                append("## Filesystem & Project Paths\n")
+                append("- Phone shared storage is bound at `/tmp/gemini_app/storage` (maps to `/storage/emulated/0`).\n")
+                append("- Project workspaces live at `/tmp/gemini_app/workspaces/<ProjectName>`, which maps to `/tmp/gemini_app/storage/<ProjectName>/main/`.\n")
+                append("- Put all project code/files inside the workspace (`main/`). Do **not** write project files into `chats/`.\n")
+                append("- Outside a project (no-project mode), temporary/scratch files belong in `/tmp/gemini_app/antigravity/scratch/` (always create actual files with extensions, not directories, when writing files).\n\n")
+                append("## Automations (Scheduled Sidecars)\n")
+                append("- Automation configs **must** be written to `/tmp/gemini_app/config/sidecars/<automation-id>/sidecar.json` (never `antigravity/scratch/sidecars/` or `antigravity/sidecars/`).\n")
+                append("- Use `\"builtin\": \"schedule\"` with `args` like `[\"<cron>\", \"agentapi\", \"new-conversation\", \"--model=gemini-4-hydrogen-low\", \"--\", \"<prompt>\"]` (the Android runtime automatically reuses the automation's persistent conversation on subsequent runs).\n")
+                append("- `agentapi` is at `/tmp/gemini_app/antigravity/bin/agentapi`.\n")
+            }
+
+            val geminiRoot = File(rootfsDir, "tmp/gemini_app").apply { mkdirs() }
+            val antigravityRoot = File(geminiRoot, "antigravity").apply { mkdirs() }
+            File(geminiRoot, "GEMINI.md").writeText(guide)
+            File(antigravityRoot, "GEMINI.md").writeText(guide)
+            Log.i(TAG, "Updated runtime environment guide at GEMINI.md")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to write GEMINI.md (non-fatal): ${e.message}")
+        }
     }
 }
