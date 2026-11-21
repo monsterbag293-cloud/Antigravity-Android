@@ -2,7 +2,7 @@
 
 [![Platform: Android](https://img.shields.io/badge/Platform-Android%2014%2B-3DDC84.svg?style=flat&logo=android)](https://www.android.com/)
 [![Built with: Kotlin & Jetpack Compose](https://img.shields.io/badge/Built%20with-Kotlin%20%7C%20Jetpack%20Compose-7F52FF.svg?style=flat&logo=kotlin)](https://developer.android.com/jetpack/compose)
-[![Status: Experimental Preview](https://img.shields.io/badge/Status-Preview%20Build-orange.svg?style=flat)](#quick-download)
+[![Release: v1.0.0](https://img.shields.io/badge/Release-v1.0.0-brightgreen.svg?style=flat)](#quick-download)
 [![Latest Release](https://img.shields.io/github/v/release/monsterbag293-cloud/Antigravity-Android?include_prereleases&label=latest%20release&color=blue)](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/monsterbag293-cloud/Antigravity-Android?style=flat&logo=github)](https://github.com/monsterbag293-cloud/Antigravity-Android/stargazers)
 
@@ -10,19 +10,9 @@ An unofficial native Android port and mobile compatibility runtime for **Google 
 
 ---
 
-> [!IMPORTANT]
-> ### Legal Disclaimer & Trademark Notice
-> This project is an **independent, community-maintained compatibility layer** and is **not** created, endorsed, sponsored, or affiliated with Google LLC or Alphabet Inc.
-> 
-> * **Google Antigravity**, **Gemini**, and related trademarks, logos, and service assets are the exclusive intellectual property of **Google LLC**.
-> * This repository **does NOT claim any ownership or license** over Google's proprietary binaries, assets, or trademarks.
-> * This repository does not contain a broad permissive license (such as MIT or Apache 2.0) claiming rights over the software. All rights to the underlying Antigravity software remain reserved by their respective copyright holders.
-
----
-
 ## 📥 Quick Download
 
-**Get the latest build in one click:**
+**Get the latest v1.0.0 build in one click:**
 
 [![Download Latest Release](https://img.shields.io/badge/Download-Latest%20Release-blue?style=for-the-badge&logo=github)](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)
 
@@ -55,11 +45,13 @@ An unofficial native Android port and mobile compatibility runtime for **Google 
 
 ## Features
 
-- **Native Language Server Bridge**: Connects in-app WebViews to local language servers and gRPC-Web proxy streams natively on Android.
+- **Native PRoot & Language Server Runtime**: Runs local language servers, gRPC-Web proxy streams, Python 3.12, Node.js v22, and Git natively inside an unprivileged Debian 12 ARM64 PRoot environment.
+- **Swarm & Automations Support**: Full Swarm sidecar UI, persistent scheduled automations with conversation reuse, and rich Android notifications showing the assistant's actual response.
+- **Clean Project & Chat Storage**: Separates workspace files (`{Project Name}/main/`) from synced conversation databases (`{Project Name}/chats/{Chat Name}/`).
 - **Mobile Touch Drawer**: Fluid, GPU-accelerated left panel with live finger tracking and horizontal swipe-to-open / swipe-to-close gestures.
 - **Strict Single-Conversation Layout**: Removes desktop split-view anomalies on narrow viewports; sequential conversation clicks load cleanly within the viewport.
-- **Customization & Plugin OAuth Support**: External authentication flows (e.g. Google Drive, GitHub) open via Chrome Custom Tabs and return cleanly to the app upon sign-in.
-- **Stationary 2-Second Long-Press Drag**: Prevents accidental item grabbing while scrolling lists; drag-and-drop triggers only after holding stationary for 2 seconds.
+- **Customization & Plugin OAuth Support**: Single-tap Marketplace installs and external authentication flows (e.g. Google Drive, GitHub) via Chrome Custom Tabs.
+- **Hold-to-Drag Sidebar Reordering**: Smooth vertical scrolling on conversation/project lists with a `380ms` long-press threshold to drag and reorder items.
 - **Adaptive Vector Launcher Icon**: Official Antigravity gradient glyph accurately centered inside Android's adaptive icon safe zone with dynamic color support.
 - **Native Typography**: Styled with Google Sans and Material 3 design tokens.
 
@@ -141,3 +133,13 @@ Antigravity-Port/
 - **Bug Reports**: Encountered a visual glitch or gesture conflict? Open a [Bug Report](https://github.com/monsterbag293-cloud/Antigravity-Android/issues/new?template=bug_report.yml) with your device model and steps to reproduce.
 - **Feature Requests**: Have an idea for mobile UI improvements? Submit a [Feature Request](https://github.com/monsterbag293-cloud/Antigravity-Android/issues/new?template=feature_request.yml&labels=enhancement).
 - **Discussions & Ideas**: Share mobile workflows and suggest ideas in [GitHub Discussions](https://github.com/monsterbag293-cloud/Antigravity-Android/discussions).
+
+---
+
+> [!IMPORTANT]
+> ### Legal Disclaimer & Trademark Notice
+> This project is an **independent, community-maintained compatibility layer** and is **not** created, endorsed, sponsored, or affiliated with Google LLC or Alphabet Inc.
+>
+> * **Google Antigravity**, **Gemini**, and related trademarks, logos, and service assets are the exclusive intellectual property of **Google LLC**.
+> * This repository **does NOT claim any ownership or license** over Google's proprietary binaries, assets, or trademarks.
+> * All rights to the underlying Antigravity software remain reserved by their respective copyright holders.
