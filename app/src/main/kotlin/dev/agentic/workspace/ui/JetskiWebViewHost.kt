@@ -33,6 +33,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
@@ -610,6 +611,11 @@ fun JetskiWebViewHost(
                     }
 
                     @JavascriptInterface
+                    fun getStreamProxyPort(): Int {
+                        return rpcHandler?.hubProxyHandler?.getOrStartStreamProxyPort() ?: 0
+                    }
+
+                    @JavascriptInterface
                     fun setDarkTheme(isDark: Boolean) {
                         mainHandler.post {
                             try {
@@ -776,19 +782,30 @@ fun JetskiWebViewHost(
         ?: kotlinx.coroutines.flow.MutableStateFlow(LocalBackendLifecycleManager.LocalBackendState.Stopped)
     ).collectAsState()
 
-    // Auto-fallback watchdog: If backend provisioning or starting errors out,
-    // automatically switch the in-memory rpcHandler to LOCAL_GEMINI_FALLBACK mode so the app enters the UI seamlessly.
-    var fallbackTriggered by remember { mutableStateOf(false) }
-    androidx.compose.runtime.LaunchedEffect(currentBackendState) {
-        if (currentBackendState is LocalBackendLifecycleManager.LocalBackendState.Error && !fallbackTriggered) {
-            fallbackTriggered = true
-            Log.w("JetskiWebViewHost", "Backend state entered Error: ${(currentBackendState as LocalBackendLifecycleManager.LocalBackendState.Error).message}. Auto-switching rpcHandler to LOCAL_GEMINI_FALLBACK.")
-            rpcHandler?.setBackendMode(BackendMode.LOCAL_GEMINI_FALLBACK)
+    // Auto-start watchdog: if backend is Stopped when entering WebView in standalone mode, start it once.
+    // If backend enters Error, surface the actionable Retry / Native Fallback dialog instead of silently
+    // entering LOCAL_GEMINI_FALLBACK (which renders a blank screen in v2.33.0).
+    var autoStartAttempted by remember { mutableStateOf(false) }
+    val retryScope = androidx.compose.runtime.rememberCoroutineScope()
+    androidx.compose.runtime.LaunchedEffect(currentBackendState, rpcHandler?.backendMode) {
+        if (currentBackendState is LocalBackendLifecycleManager.LocalBackendState.Stopped &&
+            rpcHandler?.backendMode == BackendMode.STANDALONE_IN_APP_BACKEND &&
+            backendLifecycleManager != null &&
+            !requestInterceptor.isHubConnected() &&
+            !autoStartAttempted
+        ) {
+            autoStartAttempted = true
+            Log.i("JetskiWebViewHost", "Backend state is Stopped on WebView entry; starting local backend...")
+            backendLifecycleManager.startBackend()
+        } else if (currentBackendState is LocalBackendLifecycleManager.LocalBackendState.Error) {
+            val errMsg = (currentBackendState as LocalBackendLifecycleManager.LocalBackendState.Error).message
+            Log.w("JetskiWebViewHost", "Backend state entered Error: $errMsg")
+            loadErrorDescription = errMsg
         }
     }
 
-    val isHubReady = remember(hubConnectionState.value, remoteHostUrl, currentBackendState, fallbackTriggered) {
-        remoteHostUrl != null || requestInterceptor.isHubConnected() || fallbackTriggered
+    val isHubReady = remember(hubConnectionState.value, remoteHostUrl, currentBackendState) {
+        remoteHostUrl != null || requestInterceptor.isHubConnected()
     }
     val waitingHtml = remember {
         """
@@ -1080,11 +1097,17 @@ fun JetskiWebViewHost(
                         val msg = if (s.message.isNotBlank()) s.message else "Starting engine..."
                         Triple(92, msg, "Initializing local language server daemon...")
                     }
+                    is LocalBackendLifecycleManager.LocalBackendState.Running -> {
+                        Triple(96, "Connecting to local workspace...", "Finalizing WebView bridge...")
+                    }
+                    is LocalBackendLifecycleManager.LocalBackendState.Stopped -> {
+                        Triple(15, "Starting workspace engine...", "Preparing local runtime...")
+                    }
                     is LocalBackendLifecycleManager.LocalBackendState.Error -> {
                         Triple(92, "Connecting fallback engine...", "Notice: ${s.message.take(60)}")
                     }
                     else -> {
-                        Triple(50, "Connecting workspace engine...", "Initializing services...")
+                        Triple(85, "Connecting workspace engine...", "Initializing services...")
                     }
                 }
 
@@ -1213,7 +1236,13 @@ fun JetskiWebViewHost(
                             Button(
                                 onClick = {
                                     loadErrorDescription = null
-                                    webViewRef?.loadUrl(targetUrl)
+                                    if (remoteHostUrl == null && !requestInterceptor.isHubConnected() && backendLifecycleManager != null) {
+                                        retryScope.launch {
+                                            backendLifecycleManager.startBackend()
+                                        }
+                                    } else {
+                                        webViewRef?.loadUrl(targetUrl)
+                                    }
                                 }
                             ) {
                                 Text("Retry")

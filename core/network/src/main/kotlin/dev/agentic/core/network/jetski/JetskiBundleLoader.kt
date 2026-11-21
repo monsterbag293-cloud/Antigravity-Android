@@ -57,6 +57,8 @@ class JetskiBundleLoader {
     companion object {
         const val KNOWN_DESKTOP_ZIP_OFFSET = 176_652_793L
         const val KNOWN_DESKTOP_ZIP_LENGTH = 5_930_366L
+        const val KNOWN_ARM64_ZIP_OFFSET = 171_652_889L
+        const val KNOWN_ARM64_ZIP_LENGTH = 5_930_366L
 
         private const val LOCAL_FILE_HEADER_SIG = 0x04034B50
         private const val CENTRAL_DIR_HEADER_SIG = 0x02014B50
@@ -150,6 +152,14 @@ class JetskiBundleLoader {
             if (text.contains(browserAuxTarget)) {
                 text = text.replace(browserAuxTarget, browserAuxReplacement)
             }
+            // Use touch-friendly stacked mobile bottom sheets for wW (v2.33.0+) and aU (v2.32.1)
+            // submenus (Model -> View Usage, 3-dot -> Plugins) while preserving the full desktop UI/layout.
+            val menuMobile233Target = """function wW({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=LP(),"""
+            val menuMobile233Replacement = """function wW({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=!0,"""
+            if (text.contains(menuMobile233Target)) {
+                text = text.replace(menuMobile233Target, menuMobile233Replacement)
+            }
+
             // Use touch-friendly stacked mobile bottom sheets for aU submenus (3-dot -> Extensions,
             // Projects -> This Device) while preserving the full V4 zi.Electron desktop UI/sidebar.
             val menuMobileTarget = """function aU({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=HG(),"""
@@ -989,7 +999,7 @@ class JetskiBundleLoader {
                 append("                        const u = msg && msg.update;\n")
                 append("                        const su = u && u.mainTrajectoryUpdate && u.mainTrajectoryUpdate.stepsUpdate;\n")
                 append("                        if (u) {\n")
-                append("                          isConvoIdle = !!(u.fullyIdle || u.status === 'CASCADE_RUN_STATUS_IDLE');\n")
+                append("                          isConvoIdle = !!(u.fullyIdle || u.status === 1 || u.status === 'CASCADE_RUN_STATUS_IDLE');\n")
                 append("                        }\n")
                 append("                        if (u && isConvoIdle && su && Array.isArray(su.steps) && su.steps.length > 0) {\n")
                 append("                          const cid = u.conversationId || reqArg.conversationId;\n")
@@ -1008,11 +1018,7 @@ class JetskiBundleLoader {
                 append("                            } catch (e) {}\n")
                 append("                          }\n")
                 append("                        }\n")
-                append("                        const sig = fastAgentStateSig(u, su, msg);\n")
-                append("                        if (sig !== lastSig) {\n")
-                append("                          lastSig = sig;\n")
-                append("                          yield msg;\n")
-                append("                        }\n")
+                append("                        yield msg;\n")
                 append("                      }\n")
                 append("                    } catch (err) {\n")
                 append("                      if (signal && signal.aborted) return;\n")
@@ -1189,7 +1195,17 @@ class JetskiBundleLoader {
                 append("      let isLsRpc = false;\n")
                 append("      try {\n")
                 append("        const url = typeof input === 'string' ? input : (input && input.url ? input.url : String(input));\n")
-                append("        isLsRpc = url.indexOf('/exa.language_server_pb.LanguageServerService/') !== -1;\n")
+                append("        let useStreamProxy = false;\n")
+                append("        if (url.indexOf('/exa.language_server_pb.LanguageServerService/StreamAgentStateUpdates') !== -1) {\n")
+                append("          const sp = window.__ANTIGRAVITY_ANDROID_BRIDGE__?.getStreamProxyPort?.() || 0;\n")
+                append("          if (sp > 0) {\n")
+                append("            const parsed = new URL(url, window.location.origin);\n")
+                append("            const proxyUrl = 'http://127.0.0.1:' + sp + parsed.pathname + parsed.search;\n")
+                append("            input = typeof input === 'string' ? proxyUrl : new Request(proxyUrl, input);\n")
+                append("            useStreamProxy = true;\n")
+                append("          }\n")
+                append("        }\n")
+                append("        isLsRpc = !useStreamProxy && url.indexOf('/exa.language_server_pb.LanguageServerService/') !== -1;\n")
                 append("        if (isLsRpc && init && init.body) {\n")
                 append("          let b64 = null;\n")
                 append("          if (init.body instanceof Uint8Array) {\n")
@@ -2144,13 +2160,18 @@ class JetskiBundleLoader {
             }
         }
 
-        // 2. Fast-path check for verified Antigravity 2.32.1 language_server.exe offset
-        if (fileLen >= KNOWN_DESKTOP_ZIP_OFFSET + KNOWN_DESKTOP_ZIP_LENGTH) {
-            raf.seek(KNOWN_DESKTOP_ZIP_OFFSET)
-            if (Integer.reverseBytes(raf.readInt()) == LOCAL_FILE_HEADER_SIG) {
-                val cd = parseCentralDirectory(raf, KNOWN_DESKTOP_ZIP_OFFSET, KNOWN_DESKTOP_ZIP_LENGTH)
-                if (cd != null && cd.containsKey("index.html") && cd.containsKey("main.js")) {
-                    return KNOWN_DESKTOP_ZIP_OFFSET to KNOWN_DESKTOP_ZIP_LENGTH
+        // 2. Fast-path check for verified Antigravity 2.32.1 Linux ARM64 & Desktop offsets
+        for ((knownOffset, knownLength) in listOf(
+            KNOWN_ARM64_ZIP_OFFSET to KNOWN_ARM64_ZIP_LENGTH,
+            KNOWN_DESKTOP_ZIP_OFFSET to KNOWN_DESKTOP_ZIP_LENGTH
+        )) {
+            if (fileLen >= knownOffset + knownLength) {
+                raf.seek(knownOffset)
+                if (Integer.reverseBytes(raf.readInt()) == LOCAL_FILE_HEADER_SIG) {
+                    val cd = parseCentralDirectory(raf, knownOffset, knownLength)
+                    if (cd != null && cd.containsKey("index.html") && cd.containsKey("main.js")) {
+                        return knownOffset to knownLength
+                    }
                 }
             }
         }

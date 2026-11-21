@@ -86,12 +86,12 @@ class LocalBackendLifecycleManager(
     /**
      * Starts the original Antigravity backend on-device inside the application sandbox.
      */
-    suspend fun startBackend(targetPort: Int = DEFAULT_HTTP_PORT): Result<DesktopHubConfig> = lifecycleMutex.withLock {
-        withContext(Dispatchers.IO) {
+    suspend fun startBackend(targetPort: Int = DEFAULT_HTTP_PORT): Result<DesktopHubConfig> = scope.async {
+        lifecycleMutex.withLock {
             if (activeProcess?.isAlive == true && _backendState.value is LocalBackendState.Running) {
                 Log.i(TAG, "Backend already running on port $activePort")
                 val running = _backendState.value as LocalBackendState.Running
-                return@withContext Result.success(running.hubConfig)
+                return@withLock Result.success(running.hubConfig)
             }
 
         try {
@@ -108,10 +108,13 @@ class LocalBackendLifecycleManager(
             if (provisionResult.isFailure) {
                 val err = provisionResult.exceptionOrNull()
                 _backendState.value = LocalBackendState.Error("Backend provisioning failed: ${err?.message}", err)
-                return@withContext Result.failure(err ?: IOException("Provisioning failure"))
+                return@withLock Result.failure(err ?: IOException("Provisioning failure"))
             }
 
             _backendState.value = LocalBackendState.Starting("Launching original Google Antigravity backend...")
+
+            // Refresh rootfs /etc/hosts with live Android DNS resolution before launching PRoot
+            provisioningManager.ensureDnsAndHostsConfiguration()
 
             val rootfsDir = provisioningManager.rootfsDir
             val nativeLibDir = context.applicationInfo.nativeLibraryDir
@@ -274,7 +277,15 @@ class LocalBackendLifecycleManager(
             )
 
             _backendState.value = LocalBackendState.Starting("Connecting in-app RPC relay to local Hub...")
-            val connectResult = hubConnectionManager.connect(localHubConfig)
+            var connectResult = hubConnectionManager.connect(localHubConfig)
+            if (connectResult.isFailure) {
+                kotlinx.coroutines.delay(600)
+                connectResult = hubConnectionManager.connect(localHubConfig)
+            }
+            if (connectResult.isFailure) {
+                val connErr = connectResult.exceptionOrNull()
+                throw IOException("Failed to connect to local Hub on 127.0.0.1:$httpPort: ${connErr?.message}", connErr)
+            }
             val hubStatus = connectResult.getOrNull()
 
             val rssKb = readProcessMemoryRssKb(pid)
@@ -298,18 +309,25 @@ class LocalBackendLifecycleManager(
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start local backend: ${e.message}", e)
+            stopProcessInternal()
             _backendState.value = LocalBackendState.Error("Failed to start backend: ${e.message}", e)
-            stopBackend()
             Result.failure(e)
         }
-    }
-}
+        }
+    }.await()
 
     /**
      * Stops the backend process cleanly and verifies child process cleanup.
      */
     @Synchronized
     fun stopBackend() {
+        stopProcessInternal()
+        _backendState.value = LocalBackendState.Stopped
+        Log.i(TAG, "Backend stopped cleanly")
+    }
+
+    @Synchronized
+    private fun stopProcessInternal() {
         Log.i(TAG, "Stopping local backend process...")
         healthMonitorJob?.cancel()
         healthMonitorJob = null
@@ -331,8 +349,6 @@ class LocalBackendLifecycleManager(
         }
 
         cleanupOrphanProcesses()
-        _backendState.value = LocalBackendState.Stopped
-        Log.i(TAG, "Backend stopped cleanly")
     }
 
     /**

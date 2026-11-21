@@ -179,6 +179,24 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Keep foreground service active whenever the on-device backend is starting or running
+        // so Android does not throttle or abort language_server's outbound cloud streams.
+        lifecycleScope.launch {
+            lifecycleManager.backendState.collect { state ->
+                when (state) {
+                    is LocalBackendLifecycleManager.LocalBackendState.Starting,
+                    is LocalBackendLifecycleManager.LocalBackendState.Running -> {
+                        dev.agentic.workspace.service.BackendKeepAliveService.start(applicationContext)
+                    }
+                    is LocalBackendLifecycleManager.LocalBackendState.Stopped,
+                    is LocalBackendLifecycleManager.LocalBackendState.Error -> {
+                        dev.agentic.workspace.service.BackendKeepAliveService.stop(applicationContext)
+                    }
+                    else -> Unit
+                }
+            }
+        }
+
         // Automatically start standalone on-device engine only when already provisioned
         lifecycleScope.launch(Dispatchers.IO) {
             if (rpcHandler.backendMode == BackendMode.STANDALONE_IN_APP_BACKEND && provisioningManager.isProvisioned()) {
@@ -201,6 +219,7 @@ class MainActivity : ComponentActivity() {
                 if (!authUrl.isNullOrBlank()) {
                     Log.i(TAG, "Received Google OAuth authorization URL: $authUrl")
                     try {
+                        dev.agentic.workspace.service.BackendKeepAliveService.start(applicationContext)
                         val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)).apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
@@ -301,6 +320,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         if (isFinishing) {
             Log.i(TAG, "MainActivity is finishing; shutting down standalone backend to avoid orphans...")
+            dev.agentic.workspace.service.BackendKeepAliveService.stop(applicationContext)
             backendLifecycleManager?.stopBackend()
         }
     }

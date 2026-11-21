@@ -208,13 +208,13 @@ class BackendProvisioningManager(private val context: Context) {
                 downloadUrlOverride.trim()
             } else {
                 onProgress?.invoke(
-                    ProvisioningStatus.Progress("Resolving", 5, "Checking latest Antigravity release from Google...")
+                    ProvisioningStatus.Progress("Resolving", 39, "Checking latest Antigravity release from Google...")
                 )
                 val latest = resolveLatestRelease()
                 onProgress?.invoke(
                     ProvisioningStatus.Progress(
                         "Downloading",
-                        8,
+                        40,
                         "Downloading official runtime v${latest.version}..."
                     )
                 )
@@ -222,8 +222,9 @@ class BackendProvisioningManager(private val context: Context) {
             }
 
             downloadBackendBinary(resolvedUrl, expectedSha256) { pct ->
+                val mappedPct = 40 + (pct * 52 / 100)
                 onProgress?.invoke(
-                    ProvisioningStatus.Progress("Downloading", pct, "Downloading backend runtime: $pct%")
+                    ProvisioningStatus.Progress("Downloading", mappedPct, "Downloading backend runtime: $pct%")
                 )
             }
 
@@ -315,7 +316,7 @@ class BackendProvisioningManager(private val context: Context) {
         val assetName = assetList.firstOrNull { it.startsWith("rootfs") }
             ?: throw IOException("Debian rootfs archive not found in APK assets")
 
-        onProgress(ProvisioningStatus.Progress("Extracting Rootfs", 10, "Extracting Debian Linux userspace base..."))
+        onProgress(ProvisioningStatus.Progress("Extracting Rootfs", 5, "Extracting Debian Linux userspace base..."))
         Log.i(TAG, "Extracting rootfs asset $assetName to ${rootfsDir.absolutePath}")
 
         // Attempt in-process POSIX tar unpacking first (100% reliable across all Android OS versions and SELinux boundaries)
@@ -323,10 +324,11 @@ class BackendProvisioningManager(private val context: Context) {
             context.assets.open(assetName).use { assetStream ->
                 val byteStream = if (assetName.endsWith(".gz")) GZIPInputStream(assetStream, 64 * 1024) else assetStream
                 extractTarArchive(byteStream, rootfsDir) { pct ->
-                    onProgress(ProvisioningStatus.Progress("Extracting Rootfs", 10 + (pct * 40 / 100), "Unpacking Debian userspace: $pct%"))
+                    onProgress(ProvisioningStatus.Progress("Extracting Rootfs", 5 + (pct * 20 / 100), "Unpacking Debian userspace: $pct%"))
                 }
             }
             if (unameBinary.exists()) {
+                onProgress(ProvisioningStatus.Progress("Extracting Rootfs", 25, "Debian Linux userspace ready."))
                 Log.i(TAG, "Debian rootfs extracted successfully via in-process tar engine")
                 return
             }
@@ -673,15 +675,30 @@ class BackendProvisioningManager(private val context: Context) {
             val resolvConf = File(etcDir, "resolv.conf")
             val hostsFile = File(etcDir, "hosts")
 
+            val targetHosts = listOf(
+                "oauth2.googleapis.com" to "142.250.70.170",
+                "accounts.google.com" to "142.250.70.173",
+                "www.googleapis.com" to "142.250.70.170",
+                "cloudcode-pa.googleapis.com" to "142.250.70.170",
+                "daily-cloudcode-pa.googleapis.com" to "142.250.70.170",
+                "developerconnect.googleapis.com" to "142.250.70.170",
+                "cloudaicompanion.googleapis.com" to "142.250.70.170",
+                "generativelanguage.googleapis.com" to "142.250.70.170",
+                "antigravity.googleapis.com" to "142.250.70.170",
+                "storage.googleapis.com" to "142.250.70.187"
+            )
+
             val hostsContent = buildString {
                 append("127.0.0.1 localhost\n")
                 append("::1 localhost\n")
-                append("192.178.226.95 oauth2.googleapis.com\n")
-                append("172.217.221.84 accounts.google.com\n")
-                append("172.217.113.4 cloudcode-pa.googleapis.com\n")
-                append("172.217.113.4 daily-cloudcode-pa.googleapis.com\n")
-                append("172.217.117.4 developerconnect.googleapis.com\n")
-                append("172.217.119.4 cloudaicompanion.googleapis.com\n")
+                for ((host, fallbackIp) in targetHosts) {
+                    val resolvedIp = runCatching {
+                        val addrs = java.net.InetAddress.getAllByName(host)
+                        addrs.firstOrNull { it is java.net.Inet4Address }?.hostAddress
+                            ?: addrs.firstOrNull()?.hostAddress
+                    }.getOrNull() ?: fallbackIp
+                    append("$resolvedIp $host\n")
+                }
             }
             hostsFile.writeText(hostsContent)
 
@@ -718,13 +735,16 @@ class BackendProvisioningManager(private val context: Context) {
                     ProvisioningStatus.Progress("Python", 20, "Installing Python 3.12 runtime for code execution...")
                 )
                 File(rootfsDir, "usr/local").mkdirs()
+                onProgress?.invoke(
+                    ProvisioningStatus.Progress("Python", 26, "Downloading Python 3.12 runtime...")
+                )
                 downloadWithRedirects(PYTHON_STANDALONE_URL, tempArchive) { pct ->
                     onProgress?.invoke(
-                        ProvisioningStatus.Progress("Python", 20 + (pct / 2), "Downloading Python 3.12 runtime: $pct%")
+                        ProvisioningStatus.Progress("Python", 26 + (pct / 10), "Downloading Python 3.12 runtime: $pct%")
                     )
                 }
                 onProgress?.invoke(
-                    ProvisioningStatus.Progress("Python", 75, "Extracting Python 3.12 runtime...")
+                    ProvisioningStatus.Progress("Python", 37, "Extracting Python 3.12 runtime...")
                 )
                 tempArchive.inputStream().use { fis ->
                     GZIPInputStream(fis, BUFFER_SIZE).use { gzis ->
@@ -785,6 +805,7 @@ class BackendProvisioningManager(private val context: Context) {
             }
             val total = conn.contentLengthLong
             var readTotal = 0L
+            var lastPct = -1
             destFile.parentFile?.mkdirs()
             conn.inputStream.use { inp ->
                 FileOutputStream(destFile).use { out ->
@@ -794,7 +815,11 @@ class BackendProvisioningManager(private val context: Context) {
                         out.write(buf, 0, n)
                         readTotal += n
                         if (total > 0) {
-                            onProgress?.invoke(((readTotal * 100) / total).toInt().coerceIn(0, 100))
+                            val pct = ((readTotal * 100) / total).toInt().coerceIn(0, 100)
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                onProgress?.invoke(pct)
+                            }
                         }
                     }
                 }

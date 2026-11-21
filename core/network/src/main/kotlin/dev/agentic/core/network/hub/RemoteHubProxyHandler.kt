@@ -56,6 +56,22 @@ class RemoteHubProxyHandler(
 
     private val quotaSnapshotByGroup = ConcurrentHashMap<String, DesktopModelCatalog.ModelQuotaSnapshot>()
 
+    @Volatile
+    private var streamProxyServer: LocalStreamProxyServer? = null
+
+    /**
+     * Returns the port of a lazy-started loopback HTTP/1.1 chunked streaming proxy for
+     * `StreamAgentStateUpdates`, bypassing WebView's `shouldInterceptRequest` stream buffering.
+     */
+    @Synchronized
+    fun getOrStartStreamProxyPort(): Int {
+        val existing = streamProxyServer
+        if (existing != null) return existing.port
+        val created = LocalStreamProxyServer(connectionManager)
+        streamProxyServer = created
+        return created.port
+    }
+
     companion object {
         private val EXCLUDED_REQUEST_HEADERS = setOf(
             "host",
@@ -168,7 +184,7 @@ class RemoteHubProxyHandler(
                 )
             } else if (isAgentStateStream) {
                 val agentStreamingClient = client.newBuilder()
-                    .readTimeout(6000, TimeUnit.MILLISECONDS)
+                    .readTimeout(0, TimeUnit.MILLISECONDS)
                     .build()
                 val call = agentStreamingClient.newCall(requestBuilder.build())
                 val response = call.execute()
@@ -184,56 +200,59 @@ class RemoteHubProxyHandler(
                 responseHeaders["Cache-Control"] = "no-cache"
 
                 val respContentType = response.header("content-type") ?: GrpcWebFrameCodec.CONTENT_TYPE_GRPC_WEB_JSON
-                val snapshotBytes = try {
-                    response.use { resp ->
-                        val rawStream = resp.body?.byteStream()
-                        if (rawStream == null) {
-                            ByteArray(0)
-                        } else {
-                            readAgentStateStreamSnapshot(
-                                input = rawStream,
-                                call = call,
-                                contentType = respContentType,
-                                httpSuccess = resp.isSuccessful
-                            )
-                        }
-                    }
-                } finally {
-                    call.cancel()
-                }
-
-                val parsedFrame = if (response.isSuccessful) {
-                    extractFirstDataFrameJson(snapshotBytes, respContentType)
-                } else {
-                    null
-                }
-                val finalBytes: ByteArray
-                val finalStatus: Int
-                if (parsedFrame != null) {
-                    if (requestedCascadeId != null && conversationCache != null) {
-                        conversationCache.cacheAgentStateSnapshot(requestedCascadeId, parsedFrame)
-                    }
-                    finalBytes = snapshotBytes
-                    finalStatus = response.code
-                } else {
+                if (!response.isSuccessful) {
+                    val errBody = response.use { it.body?.bytes() ?: ByteArray(0) }
                     val cachedSnap = requestedCascadeId?.let { conversationCache?.getCachedStreamSnapshotResponse(it) }
                     if (cachedSnap != null) {
                         val isConnectStream = respContentType.contains("connect+", ignoreCase = true)
-                        finalBytes = encodeStreamSingleMessage(cachedSnap, isConnectStream)
-                        finalStatus = 200
+                        GrpcWebHttpResponse(
+                            statusCode = 200,
+                            contentType = respContentType,
+                            headers = responseHeaders,
+                            body = encodeStreamSingleMessage(cachedSnap, isConnectStream),
+                            bodyStream = null
+                        )
                     } else {
-                        finalBytes = snapshotBytes
-                        finalStatus = response.code
+                        GrpcWebHttpResponse(
+                            statusCode = response.code,
+                            contentType = respContentType,
+                            headers = responseHeaders,
+                            body = errBody,
+                            bodyStream = null
+                        )
                     }
-                }
+                } else {
+                    val rawStream = response.body?.byteStream() ?: java.io.ByteArrayInputStream(ByteArray(0))
+                    val finalStream = object : java.io.FilterInputStream(rawStream) {
+                        override fun read(b: ByteArray, off: Int, len: Int): Int {
+                            val n = super.read(b, off, len)
+                            if (n > 0) {
+                                val text = String(b, off, minOf(n, 300), Charsets.UTF_8)
+                                if (text.contains("CASCADE_RUN_STATUS") || text.contains("fullyIdle") || text.contains("grpc-status")) {
+                                    runCatching { android.util.Log.d("RemoteHubProxy", "AgentState chunk len=$n preview=${text.replace("\n", " ").take(160)}") }
+                                }
+                            }
+                            return n
+                        }
+                        override fun close() {
+                            runCatching { android.util.Log.d("RemoteHubProxy", "AgentState stream closed") }
+                            try {
+                                runCatching { call.cancel() }
+                                runCatching { response.close() }
+                            } finally {
+                                runCatching { super.close() }
+                            }
+                        }
+                    }
 
-                GrpcWebHttpResponse(
-                    statusCode = finalStatus,
-                    contentType = respContentType,
-                    headers = responseHeaders,
-                    body = finalBytes,
-                    bodyStream = null
-                )
+                    GrpcWebHttpResponse(
+                        statusCode = response.code,
+                        contentType = respContentType,
+                        headers = responseHeaders,
+                        body = ByteArray(0),
+                        bodyStream = finalStream
+                    )
+                }
             } else if (isStreaming) {
                 val isProjectOrSummaryStream =
                     request.path.endsWith("/ProjectUpdatesStream") ||
@@ -902,8 +921,8 @@ class RemoteHubProxyHandler(
         call = call,
         contentType = contentType,
         httpSuccess = httpSuccess,
-        initialTimeoutMs = 4500L,
-        maxTimeoutMs = 5200L,
+        initialTimeoutMs = 2000L,
+        maxTimeoutMs = 2200L,
         agentStateMode = true
     )
 
@@ -937,9 +956,9 @@ class RemoteHubProxyHandler(
                 } else if (agentStateMode) {
                     val firstAt = firstFrameAtMs.get()
                     if (sawIdleFrame.get()) {
-                        (now - lastFrameAtMs.get() >= 15L) || (now - firstAt >= 60L)
+                        (now - lastFrameAtMs.get() >= 120L) || (now - firstAt >= 600L)
                     } else {
-                        (now - lastFrameAtMs.get() >= 45L) || (now - firstAt >= 220L)
+                        (now - lastFrameAtMs.get() >= 200L) || (now - firstAt >= 1800L)
                     }
                 } else {
                     (now - lastFrameAtMs.get() >= 20L) || (now - startMs >= maxTimeoutMs)

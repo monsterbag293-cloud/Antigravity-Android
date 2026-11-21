@@ -183,7 +183,7 @@ fun SetupWizardScreen(
             ) { prog ->
                 scope.launch(Dispatchers.Main) {
                     progressStage = prog.stage
-                    progressPercent = prog.percent.coerceIn(0, 95)
+                    progressPercent = maxOf(progressPercent, prog.percent.coerceIn(0, 95))
                     progressMessage = prog.message
                 }
             }
@@ -686,7 +686,7 @@ private fun AntigravityArchEmblem(modifier: Modifier = Modifier) {
         drawPath(
             path = path,
             brush = Brush.linearGradient(
-                colors = listOf(Color.White, Color(0xFF8AB4F8)),
+                colors = listOf(Color.White, Color(0xFFE0E0E0)),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             ),

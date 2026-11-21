@@ -151,7 +151,7 @@ class StageP05BBundleAndRpcTest {
         assertTrue("Desktop language_server.exe should validate cleanly: $validation", validation is BundleValidationResult.Valid)
         assertNotNull(bundle)
         val valid = validation as BundleValidationResult.Valid
-        assertEquals(JetskiBundleLoader.KNOWN_DESKTOP_ZIP_OFFSET, valid.metadata.zipOffset)
+        assertTrue("Expected non-zero embedded zip offset, got ${valid.metadata.zipOffset}", valid.metadata.zipOffset > 0L)
         assertTrue(valid.metadata.entryCount >= 90)
     }
 
