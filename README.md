@@ -2,7 +2,6 @@
 
 [![Platform: Android](https://img.shields.io/badge/Platform-Android%2014%2B-3DDC84.svg?style=flat&logo=android)](https://www.android.com/)
 [![Built with: Kotlin & Jetpack Compose](https://img.shields.io/badge/Built%20with-Kotlin%20%7C%20Jetpack%20Compose-7F52FF.svg?style=flat&logo=kotlin)](https://developer.android.com/jetpack/compose)
-[![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1-brightgreen.svg?style=flat)](#quick-download)
 [![Latest Release](https://img.shields.io/github/v/release/monsterbag293-cloud/Antigravity-Android?include_prereleases&label=latest%20release&color=blue)](https://github.com/monsterbag293-cloud/Antigravity-Android/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/monsterbag293-cloud/Antigravity-Android?style=flat&logo=github)](https://github.com/monsterbag293-cloud/Antigravity-Android/stargazers)
 
@@ -41,9 +40,9 @@ An unofficial native Android port and mobile compatibility runtime for **Google 
   <img src="docs/screenshots/antigravity_android_showcase.png" alt="Antigravity for Android UI Showcase" width="100%" />
 </p>
 
-| Google Sans Splash / Loading | Single-Conversation Chat | Interactive Sidebar Drawer | Pixel Launcher Icon |
+| Google Sans Splash / Loading | Single-Conversation Chat | Interactive Sidebar Drawer | File Viewer|
 | :---: | :---: | :---: | :---: |
-| <img src="docs/screenshots/loading_screen.png" width="200" alt="Loading screen" /> | <img src="docs/screenshots/chat_view.png" width="200" alt="Chat view" /> | <img src="docs/screenshots/sidebar_drawer.png" width="200" alt="Sidebar Drawer" /> | <img src="docs/screenshots/home_icon.png" width="200" alt="Pixel Launcher Icon" /> |
+| <img src="docs/screenshots/loading_screen.png" width="200" alt="Loading screen" /> | <img src="docs/screenshots/chat_view.png" width="200" alt="Chat view" /> | <img src="docs/screenshots/sidebar_drawer.png" width="200" alt="Sidebar Drawer" /> | <img src="docs/screenshots/Screenshot_20261122-175940.png" width="200" alt="Files and Web View" /> |
 
 ---
 
