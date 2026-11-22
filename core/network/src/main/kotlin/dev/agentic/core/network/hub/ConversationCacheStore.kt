@@ -44,6 +44,7 @@ class ConversationCacheStore(
         val cachedProjectIdsByBackend: MutableMap<String, List<String>> = mutableMapOf(),
         val cachedReadProjectsJson: String? = null,
         val cachedAllSummariesJson: String? = null,
+        val cachedAllSummariesByBackend: MutableMap<String, String> = mutableMapOf(),
         val cachedAgentStateSnapshots: MutableMap<String, String> = mutableMapOf()
     )
 
@@ -456,10 +457,15 @@ class ConversationCacheStore(
         }
     }
 
-    fun cacheAllSummariesMap(summariesMap: JsonObject) {
+    fun cacheAllSummariesMap(summariesMap: JsonObject, backendId: Int = 0) {
         if (summariesMap.isEmpty()) return
         synchronized(lock) {
-            val prevMap = state.cachedAllSummariesJson?.let { raw ->
+            val rawPrev = if (backendId == 0) {
+                state.cachedAllSummariesJson
+            } else {
+                state.cachedAllSummariesByBackend[backendId.toString()]
+            }
+            val prevMap = rawPrev?.let { raw ->
                 runCatching { json.parseToJsonElement(raw).asObjOrNull() }.getOrNull()
             }
             val merged = buildJsonObject {
@@ -467,16 +473,31 @@ class ConversationCacheStore(
                 summariesMap.forEach { (k, v) -> if (k !in state.deletedIds) put(k, v) }
             }
             val encoded = merged.toString()
-            if (state.cachedAllSummariesJson != encoded) {
-                state = state.copy(cachedAllSummariesJson = encoded)
-                persistToDisk()
+            if (backendId == 0) {
+                if (state.cachedAllSummariesJson != encoded) {
+                    state = state.copy(cachedAllSummariesJson = encoded)
+                    persistToDisk()
+                }
+            } else {
+                val key = backendId.toString()
+                if (state.cachedAllSummariesByBackend[key] != encoded) {
+                    val next = state.cachedAllSummariesByBackend.toMutableMap()
+                    next[key] = encoded
+                    state = state.copy(cachedAllSummariesByBackend = next)
+                    persistToDisk()
+                }
             }
         }
     }
 
-    fun getCachedAllSummariesMap(): JsonObject? = synchronized(lock) {
-        state.cachedAllSummariesJson?.let { raw ->
-            runCatching { json.parseToJsonElement(raw).asObjOrNull() }.getOrNull()
+    fun getCachedAllSummariesMap(backendId: Int = 0): JsonObject? = synchronized(lock) {
+        val raw = if (backendId == 0) {
+            state.cachedAllSummariesJson
+        } else {
+            state.cachedAllSummariesByBackend[backendId.toString()]
+        }
+        raw?.let {
+            runCatching { json.parseToJsonElement(it).asObjOrNull() }.getOrNull()
         }?.let { map ->
             if (state.deletedIds.isEmpty()) map
             else buildJsonObject { map.forEach { (k, v) -> if (k !in state.deletedIds) put(k, v) } }
@@ -653,26 +674,95 @@ class ConversationCacheStore(
                 !existingMap.containsKey(entry.cascadeId) &&
                 (entry.stepCount > 0 || entry.stepsJson != null || entry.trajectoryJson != null || entry.summary != "New Conversation")
         }
-        if (missingEntries.isEmpty()) return existingMap
-        return buildJsonObject {
-            existingMap.forEach { (k, v) -> put(k, v) }
-            for (entry in missingEntries) {
-                val cachedSummaryObj = entry.summaryJson?.let { raw ->
-                    runCatching { json.parseToJsonElement(raw).asObjOrNull() }.getOrNull()
+        val combined = if (missingEntries.isEmpty()) {
+            existingMap
+        } else {
+            buildJsonObject {
+                existingMap.forEach { (k, v) -> put(k, v) }
+                for (entry in missingEntries) {
+                    val cachedSummaryObj = entry.summaryJson?.let { raw ->
+                        runCatching { json.parseToJsonElement(raw).asObjOrNull() }.getOrNull()
+                    }
+                    val resolved = if (cachedSummaryObj != null) {
+                        normalizeIdleSummary(
+                            cachedSummaryObj,
+                            entry.summary,
+                            entry.createdTimeIso.ifBlank { Instant.now().toString() },
+                            entry.lastModifiedTimeIso.ifBlank { Instant.now().toString() }
+                        )
+                    } else {
+                        buildSummaryObject(entry)
+                    }
+                    put(entry.cascadeId, resolved)
                 }
-                val resolved = if (cachedSummaryObj != null) {
-                    normalizeIdleSummary(
-                        cachedSummaryObj,
-                        entry.summary,
-                        entry.createdTimeIso.ifBlank { Instant.now().toString() },
-                        entry.lastModifiedTimeIso.ifBlank { Instant.now().toString() }
-                    )
-                } else {
-                    buildSummaryObject(entry)
-                }
-                put(entry.cascadeId, resolved)
             }
         }
+        return@synchronized remapOrphanedProjectIds(combined)
+    }
+
+    /**
+     * Remaps stale `trajectoryMetadata.projectId` values on imported/local chats whose
+     * workspace `folderUri` matches a known project in `cachedReadProjectsJson`.
+     */
+    private fun remapOrphanedProjectIds(summariesMap: JsonObject): JsonObject {
+        val rawProjects = state.cachedReadProjectsJson ?: return summariesMap
+        val projectsArr = runCatching {
+            json.parseToJsonElement(rawProjects).asObjOrNull()?.get("projects")?.asArrOrNull()
+        }.getOrNull() ?: return summariesMap
+
+        val validProjectIds = mutableSetOf(OUTSIDE_OF_PROJECT_ID)
+        val folderUriToProjectId = mutableMapOf<String, String>()
+        for (projEl in projectsArr) {
+            val proj = projEl.asObjOrNull() ?: continue
+            val id = proj["id"].asStrOrNull()?.takeIf { it.isNotBlank() } ?: continue
+            validProjectIds.add(id)
+            val resources = proj["projectResources"]?.asObjOrNull()
+                ?.get("resources")?.asArrOrNull() ?: continue
+            for (resEl in resources) {
+                val folderUri = resEl.asObjOrNull()?.get("folderUri").asStrOrNull()
+                    ?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: continue
+                folderUriToProjectId[folderUri] = id
+            }
+        }
+        if (folderUriToProjectId.isEmpty()) return summariesMap
+
+        var anyChanged = false
+        val remapped = buildJsonObject {
+            for ((cascadeId, el) in summariesMap) {
+                val summaryObj = el.asObjOrNull()
+                val trajMeta = summaryObj?.get("trajectoryMetadata")?.asObjOrNull()
+                val metaProjectId = trajMeta?.get("projectId").asStrOrNull()
+                if (summaryObj != null && trajMeta != null && metaProjectId != null && metaProjectId !in validProjectIds) {
+                    val candidateUris = buildList {
+                        trajMeta["workspaceUris"]?.asArrOrNull()?.forEach { u ->
+                            u.asStrOrNull()?.trimEnd('/')?.let(::add)
+                        }
+                        summaryObj["workspaces"]?.asArrOrNull()?.forEach { w ->
+                            w.asObjOrNull()?.get("workspaceFolderAbsoluteUri").asStrOrNull()
+                                ?.trimEnd('/')?.let(::add)
+                        }
+                    }
+                    val targetProjectId = candidateUris.firstNotNullOfOrNull { folderUriToProjectId[it] }
+                    if (targetProjectId != null) {
+                        anyChanged = true
+                        val updatedMeta = buildJsonObject {
+                            trajMeta.forEach { (mk, mv) ->
+                                if (mk == "projectId") put(mk, targetProjectId) else put(mk, mv)
+                            }
+                        }
+                        val updatedSummary = buildJsonObject {
+                            summaryObj.forEach { (sk, sv) ->
+                                if (sk == "trajectoryMetadata") put(sk, updatedMeta) else put(sk, sv)
+                            }
+                        }
+                        put(cascadeId, updatedSummary)
+                        continue
+                    }
+                }
+                put(cascadeId, el)
+            }
+        }
+        return if (anyChanged) remapped else summariesMap
     }
 
     fun getCachedTrajectoryResponse(cascadeId: String): JsonObject? = synchronized(lock) {

@@ -123,7 +123,10 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
             }
             if (guestTargetPath != null) {
                 try {
-                    if (linkFile.exists() || runCatching { android.system.Os.lstat(linkFile.absolutePath) }.isSuccess) {
+                    if (runCatching { android.system.Os.lstat(linkFile.absolutePath) }.isSuccess) {
+                        runCatching { android.system.Os.remove(linkFile.absolutePath) }
+                    }
+                    if (linkFile.exists()) {
                         linkFile.deleteRecursively()
                     }
                     android.system.Os.symlink(guestTargetPath, linkFile.absolutePath)
@@ -133,13 +136,65 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
             } else if (!linkFile.exists()) {
                 linkFile.mkdirs()
             }
+            importProjectChatsToRuntime(context, outerDir)
             return realTarget
         }
 
-        fun importExistingFolderFromTreeUri(context: Context, treeUri: android.net.Uri): String? {
+        /**
+         * Imports saved conversation `.db`/`.pb` files and `brain/` artifacts from `{Project}/chats/{Chat}/`
+         * into the PRoot runtime's `antigravity/conversations/` and `antigravity/brain/` directories if missing.
+         * Returns `true` if at least one new conversation `.db`/`.pb` file was copied.
+         */
+        fun importProjectChatsToRuntime(context: Context, projectOuterDir: File): Boolean {
+            val chatsDir = File(projectOuterDir, "chats")
+            if (!chatsDir.isDirectory) return false
+            val agyRoot = File(context.filesDir, "rootfs/tmp/gemini_app/antigravity")
+            val convDestDir = File(agyRoot, "conversations").apply { if (!exists()) mkdirs() }
+            val brainDestRoot = File(agyRoot, "brain").apply { if (!exists()) mkdirs() }
+            var copiedAnyDb = false
+            chatsDir.listFiles()?.forEach { chatFolder ->
+                if (!chatFolder.isDirectory) return@forEach
+                chatFolder.listFiles()?.forEach { entry ->
+                    if (entry.isFile && (entry.extension == "db" || entry.extension == "pb")) {
+                        val destDb = File(convDestDir, entry.name)
+                        if (!destDb.exists()) {
+                            if (runCatching { entry.copyTo(destDb, overwrite = false) }.isSuccess) {
+                                copiedAnyDb = true
+                            }
+                        }
+                        listOf("-wal", "-shm").forEach { suffix ->
+                            val auxSrc = File(chatFolder, "${entry.name}$suffix")
+                            val auxDest = File(convDestDir, "${entry.name}$suffix")
+                            if (auxSrc.isFile && !auxDest.exists()) {
+                                runCatching { auxSrc.copyTo(auxDest, overwrite = false) }
+                            }
+                        }
+                        val chatId = entry.nameWithoutExtension
+                        val brainSrc = File(chatFolder, "brain")
+                        if (brainSrc.isDirectory) {
+                            val brainDest = File(brainDestRoot, chatId).apply { if (!exists()) mkdirs() }
+                            brainSrc.listFiles()?.forEach { bf ->
+                                if (bf.isFile) {
+                                    val destBf = File(brainDest, bf.name)
+                                    if (!destBf.exists()) {
+                                        runCatching { bf.copyTo(destBf, overwrite = false) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return copiedAnyDb
+        }
+
+        fun importExistingFolderFromTreeUri(context: Context, treeUri: android.net.Uri): String? =
+            importExistingFolderFromTreeUriWithStatus(context, treeUri).first
+
+        fun importExistingFolderFromTreeUriWithStatus(context: Context, treeUri: android.net.Uri): Pair<String?, Boolean> {
             val treeDocId = runCatching {
                 android.provider.DocumentsContract.getTreeDocumentId(treeUri)
-            }.getOrNull() ?: return null
+            }.getOrNull() ?: return null to false
 
             val internalDir = resolveInternalWorkspacesDir(context)
             fun sanitizeName(raw: String): String = raw.trim()
@@ -169,19 +224,32 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
                 val externalRoot = Environment.getExternalStorageDirectory()
                 val realDir = if (rel.isEmpty()) externalRoot else File(externalRoot, rel)
                 if (realDir.exists() && realDir.isDirectory) {
-                    val guestTargetPath = if (rel.isEmpty()) "/tmp/gemini_app/storage" else "/tmp/gemini_app/storage/$rel"
+                    val hasStructuredLayout = File(realDir, "main").isDirectory || File(realDir, "chats").isDirectory
+                    var importedChats = false
+                    val targetSubRel = if (hasStructuredLayout) {
+                        val mainDir = File(realDir, "main")
+                        if (!mainDir.exists()) mainDir.mkdirs()
+                        importedChats = importProjectChatsToRuntime(context, realDir)
+                        if (rel.isEmpty()) "main" else "$rel/main"
+                    } else {
+                        rel
+                    }
+                    val guestTargetPath = if (targetSubRel.isEmpty()) "/tmp/gemini_app/storage" else "/tmp/gemini_app/storage/$targetSubRel"
                     val baseName = sanitizeName(realDir.name.ifBlank { "storage" })
                     val linkName = resolveLinkName(baseName, guestTargetPath)
                     val linkFile = File(internalDir, linkName)
                     val linkCreated = runCatching {
-                        if (linkFile.exists() || runCatching { android.system.Os.lstat(linkFile.absolutePath) }.isSuccess) {
+                        if (runCatching { android.system.Os.lstat(linkFile.absolutePath) }.isSuccess) {
+                            runCatching { android.system.Os.remove(linkFile.absolutePath) }
+                        }
+                        if (linkFile.exists()) {
                             linkFile.deleteRecursively()
                         }
                         android.system.Os.symlink(guestTargetPath, linkFile.absolutePath)
                         true
                     }.getOrDefault(false)
                     if (linkCreated) {
-                        return "/tmp/gemini_app/workspaces/$linkName"
+                        return "/tmp/gemini_app/workspaces/$linkName" to importedChats
                     }
                 }
             }
@@ -237,8 +305,18 @@ class AntigravityDocumentsProvider : DocumentsProvider() {
                 }
             }
 
-            copyTree(treeDocId, destRoot)
-            return "/tmp/gemini_app/workspaces/$linkName"
+            val outerDir = destRoot.parentFile ?: destRoot
+            copyTree(treeDocId, outerDir)
+            outerDir.listFiles()?.forEach { child ->
+                if (child.name != "main" && child.name != "chats") {
+                    val target = File(destRoot, child.name)
+                    if (!target.exists()) {
+                        child.renameTo(target)
+                    }
+                }
+            }
+            val importedChats = importProjectChatsToRuntime(context, outerDir)
+            return "/tmp/gemini_app/workspaces/$linkName" to importedChats
         }
 
         fun listLinkedWorkspaceFolders(context: Context): List<Pair<String, String>> {

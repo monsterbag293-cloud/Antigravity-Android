@@ -195,6 +195,7 @@ class LocalBackendLifecycleManager(
                     }
                 }
             }
+            importLinkedProjectChatsBeforeStart(rootfsDir, externalRootDir)
             startProjectChatSyncLoop(rootfsDir, externalRootDir)
 
             // Clean up any stale hub files for this port
@@ -655,6 +656,69 @@ exec "@@LS" agentapi "@@@"
 
     private var chatSyncJob: kotlinx.coroutines.Job? = null
 
+    /**
+     * Scans all linked workspace folders' `chats/` directories before starting `language_server`
+     * so any newly added `.db`/`.pb` files are copied into `antigravity/conversations/` and indexed.
+     */
+    private fun importLinkedProjectChatsBeforeStart(rootfsDir: File, externalRootDir: File?) {
+        if (externalRootDir == null) return
+        val workspacesDir = File(rootfsDir, "tmp/gemini_app/workspaces")
+        val agyRoot = File(rootfsDir, "tmp/gemini_app/antigravity")
+        val convDestDir = File(agyRoot, "conversations").apply { if (!exists()) mkdirs() }
+        val brainDestRoot = File(agyRoot, "brain").apply { if (!exists()) mkdirs() }
+
+        val outerDirs = linkedSetOf<File>()
+        workspacesDir.listFiles()?.forEach { entry ->
+            val linkTarget = runCatching { android.system.Os.readlink(entry.absolutePath) }.getOrNull()
+            if (linkTarget != null && linkTarget.startsWith("/tmp/gemini_app/storage/")) {
+                val rel = linkTarget.removePrefix("/tmp/gemini_app/storage/").trimStart('/')
+                val resolved = File(externalRootDir, rel)
+                val outer = if (resolved.name == "main") resolved.parentFile else resolved
+                if (outer != null && outer.isDirectory) outerDirs.add(outer)
+            }
+            val primaryOuter = File(externalRootDir, entry.name)
+            if (primaryOuter.isDirectory) outerDirs.add(primaryOuter)
+            val downloadsOuter = File(externalRootDir, "Download/Antigravity/workspaces/${entry.name}")
+            if (downloadsOuter.isDirectory) outerDirs.add(downloadsOuter)
+        }
+
+        for (outerDir in outerDirs) {
+            val chatsDir = File(outerDir, "chats")
+            if (!chatsDir.isDirectory) continue
+            chatsDir.listFiles()?.forEach { chatFolder ->
+                if (!chatFolder.isDirectory) return@forEach
+                chatFolder.listFiles()?.forEach { entry ->
+                    if (entry.isFile && (entry.extension == "db" || entry.extension == "pb")) {
+                        val destDb = File(convDestDir, entry.name)
+                        if (!destDb.exists()) {
+                            runCatching { entry.copyTo(destDb, overwrite = false) }
+                        }
+                        listOf("-wal", "-shm").forEach { suffix ->
+                            val auxSrc = File(chatFolder, "${entry.name}$suffix")
+                            val auxDest = File(convDestDir, "${entry.name}$suffix")
+                            if (auxSrc.isFile && !auxDest.exists()) {
+                                runCatching { auxSrc.copyTo(auxDest, overwrite = false) }
+                            }
+                        }
+                        val chatId = entry.nameWithoutExtension
+                        val brainSrc = File(chatFolder, "brain")
+                        if (brainSrc.isDirectory) {
+                            val brainDest = File(brainDestRoot, chatId).apply { if (!exists()) mkdirs() }
+                            brainSrc.listFiles()?.forEach { bf ->
+                                if (bf.isFile) {
+                                    val destBf = File(brainDest, bf.name)
+                                    if (!destBf.exists()) {
+                                        runCatching { bf.copyTo(destBf, overwrite = false) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun startProjectChatSyncLoop(rootfsDir: File, externalRootDir: File?) {
         chatSyncJob?.cancel()
         if (externalRootDir == null) return
@@ -683,27 +747,45 @@ exec "@@LS" agentapi "@@@"
                         val meta = summaryMeta[chatId]
                         val projectName = meta?.projectName ?: run {
                             val content = dbFile.readBytes().toString(Charsets.ISO_8859_1)
-                            wsRegex.find(content)?.groupValues?.get(1)
+                            wsRegex.find(content)?.groupValues?.get(1)?.let { raw ->
+                                runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+                            }
                         } ?: continue
 
-                        val projectOuter = File(externalRootDir, projectName)
+                        val primaryOuter = File(externalRootDir, projectName)
+                        val downloadsOuter = File(externalRootDir, "Download/Antigravity/workspaces/$projectName")
+                        val projectOuter = when {
+                            primaryOuter.isDirectory -> primaryOuter
+                            downloadsOuter.isDirectory -> downloadsOuter
+                            else -> continue
+                        }
                         val chatsDir = File(projectOuter, "chats")
-                        if (!projectOuter.isDirectory && !chatsDir.isDirectory) continue
                         if (!chatsDir.exists()) chatsDir.mkdirs()
 
-                        val rawTitle = meta?.title?.takeIf { it.isNotBlank() } ?: chatId
-                        val safeTitle = rawTitle.trim()
-                            .replace(Regex("[/\\\\:*?\"<>|\\r\\n]+"), "_")
-                            .trim('.', ' ')
-                            .take(64)
-                            .ifEmpty { chatId }
-                        val candidateFolder = File(chatsDir, safeTitle)
-                        val chatFolder = if (candidateFolder.isDirectory && !File(candidateFolder, dbFile.name).exists() &&
-                            candidateFolder.listFiles()?.any { it.extension == "db" || it.extension == "pb" } == true
-                        ) {
-                            File(chatsDir, "${safeTitle}_${chatId.take(6)}")
+                        val existingFolder = chatsDir.listFiles()?.firstOrNull { f ->
+                            f.isDirectory && File(f, dbFile.name).exists()
+                        }
+                        val rawTitle = meta?.title?.takeIf { it.isNotBlank() }
+                        val chatFolder = if (rawTitle != null) {
+                            val safeTitle = rawTitle.trim()
+                                .replace(Regex("[/\\\\:*?\"<>|\\r\\n]+"), "_")
+                                .trim('.', ' ')
+                                .take(64)
+                                .ifEmpty { chatId }
+                            val candidateFolder = File(chatsDir, safeTitle)
+                            when {
+                                existingFolder != null && existingFolder.name == chatId && !candidateFolder.exists() -> {
+                                    if (existingFolder.renameTo(candidateFolder)) candidateFolder else existingFolder
+                                }
+                                existingFolder != null -> existingFolder
+                                candidateFolder.isDirectory && !File(candidateFolder, dbFile.name).exists() &&
+                                    candidateFolder.listFiles()?.any { it.extension == "db" || it.extension == "pb" } == true -> {
+                                    File(chatsDir, "${safeTitle}_${chatId.take(6)}")
+                                }
+                                else -> candidateFolder
+                            }
                         } else {
-                            candidateFolder
+                            existingFolder ?: File(chatsDir, chatId)
                         }
                         if (!chatFolder.exists()) chatFolder.mkdirs()
 
@@ -748,7 +830,10 @@ exec "@@LS" agentapi "@@@"
                         val id = cursor.getString(0) ?: continue
                         val title = cursor.getString(1) ?: ""
                         val ws = cursor.getString(2) ?: ""
-                        val proj = wsRegex.find(ws)?.groupValues?.get(1)
+                        val rawProj = wsRegex.find(ws)?.groupValues?.get(1)
+                        val proj = rawProj?.let {
+                            runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it)
+                        }
                         result[id] = SummaryMeta(title = title, projectName = proj)
                     }
                 }

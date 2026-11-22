@@ -209,7 +209,10 @@ class RemoteHubProxyHandler(
                 val responseHeaders = mutableMapOf<String, String>()
 
                 for ((name, value) in response.headers) {
-                    if (!name.equals("content-type", ignoreCase = true)) {
+                    if (!name.equals("content-type", ignoreCase = true) &&
+                        !name.equals("content-length", ignoreCase = true) &&
+                        !name.equals("transfer-encoding", ignoreCase = true)
+                    ) {
                         responseHeaders[name] = value
                     }
                 }
@@ -246,7 +249,10 @@ class RemoteHubProxyHandler(
                 val responseHeaders = mutableMapOf<String, String>()
 
                 for ((name, value) in response.headers) {
-                    if (!name.equals("content-type", ignoreCase = true)) {
+                    if (!name.equals("content-type", ignoreCase = true) &&
+                        !name.equals("content-length", ignoreCase = true) &&
+                        !name.equals("transfer-encoding", ignoreCase = true)
+                    ) {
                         responseHeaders[name] = value
                     }
                 }
@@ -312,8 +318,18 @@ class RemoteHubProxyHandler(
                 val isProjectOrSummaryStream =
                     request.path.endsWith("/ProjectUpdatesStream") ||
                         request.path.endsWith("/JetboxSubscribeToSummaries")
+                val hasCloudCache = if (backendId != 0 && isProjectOrSummaryStream) {
+                    if (request.path.endsWith("/JetboxSubscribeToSummaries")) {
+                        conversationCache?.getCachedAllSummariesMap(backendId)?.isNotEmpty() == true
+                    } else {
+                        conversationCache?.getCachedProjectListIds(backendId)?.isNotEmpty() == true
+                    }
+                } else {
+                    false
+                }
                 val (readTimeoutMs, initialTimeoutMs, maxTimeoutMs) = when {
-                    isProjectOrSummaryStream && backendId != 0 -> Triple(4500L, 3200L, 4000L)
+                    isProjectOrSummaryStream && backendId != 0 && hasCloudCache -> Triple(3500L, 1800L, 2500L)
+                    isProjectOrSummaryStream && backendId != 0 -> Triple(15000L, 12000L, 14000L)
                     isProjectOrSummaryStream -> Triple(1800L, 500L, 900L)
                     else -> Triple(1200L, 120L, 300L)
                 }
@@ -325,7 +341,10 @@ class RemoteHubProxyHandler(
                 val responseHeaders = mutableMapOf<String, String>()
 
                 for ((name, value) in response.headers) {
-                    if (!name.equals("content-type", ignoreCase = true)) {
+                    if (!name.equals("content-type", ignoreCase = true) &&
+                        !name.equals("content-length", ignoreCase = true) &&
+                        !name.equals("transfer-encoding", ignoreCase = true)
+                    ) {
                         responseHeaders[name] = value
                     }
                 }
@@ -355,18 +374,52 @@ class RemoteHubProxyHandler(
                 }
 
                 val isLocalBackendReq = backendId == 0
+                val hasCachedSummaries = conversationCache?.getCachedAllSummariesMap(backendId)?.isNotEmpty() == true
+                val hasCachedProjects = conversationCache?.let {
+                    (it.getCachedProjectListIds(backendId) + it.getCachedProjectListIds(2)).isNotEmpty()
+                } == true
+                var finalStatusCode = response.code
                 val finalSnapshotBytes = when {
-                    response.isSuccessful && request.path.endsWith("/JetboxSubscribeToSummaries") && conversationCache != null -> {
-                        transformSummariesStreamWithCache(snapshotBytes, respContentType, includeZeroProjectCache = isLocalBackendReq)
+                    request.path.endsWith("/JetboxSubscribeToSummaries") && conversationCache != null &&
+                        (response.isSuccessful || hasCachedSummaries) -> {
+                        if (!response.isSuccessful) finalStatusCode = 200
+                        responseHeaders.keys.removeAll {
+                            it.equals("grpc-status", ignoreCase = true) ||
+                                it.equals("grpc-message", ignoreCase = true)
+                        }
+                        transformSummariesStreamWithCache(
+                            if (response.isSuccessful) snapshotBytes else ByteArray(0),
+                            respContentType,
+                            includeZeroProjectCache = isLocalBackendReq,
+                            backendId = backendId
+                        )
                     }
-                    response.isSuccessful && request.path.endsWith("/ProjectUpdatesStream") && conversationCache != null -> {
-                        transformProjectUpdatesStreamWithCache(snapshotBytes, respContentType, backendId)
+                    request.path.endsWith("/ProjectUpdatesStream") && conversationCache != null &&
+                        (response.isSuccessful || hasCachedProjects) -> {
+                        if (!response.isSuccessful) finalStatusCode = 200
+                        responseHeaders.keys.removeAll {
+                            it.equals("grpc-status", ignoreCase = true) ||
+                                it.equals("grpc-message", ignoreCase = true)
+                        }
+                        transformProjectUpdatesStreamWithCache(
+                            if (response.isSuccessful) snapshotBytes else ByteArray(0),
+                            respContentType,
+                            backendId
+                        )
                     }
                     else -> snapshotBytes
                 }
+                if (request.path.endsWith("/JetboxSubscribeToSummaries")) {
+                    runCatching {
+                        android.util.Log.i(
+                            "RemoteHubProxy",
+                            "JetboxSubscribeToSummaries backend=$backendId code=${response.code}->$finalStatusCode raw=${snapshotBytes.size} final=${finalSnapshotBytes.size} hasCache=$hasCachedSummaries"
+                        )
+                    }
+                }
 
                 GrpcWebHttpResponse(
-                    statusCode = response.code,
+                    statusCode = finalStatusCode,
                     contentType = respContentType,
                     headers = responseHeaders,
                     body = finalSnapshotBytes,
@@ -436,7 +489,12 @@ class RemoteHubProxyHandler(
                     val responseHeaders = mutableMapOf<String, String>()
 
                     for ((name, value) in response.headers) {
-                        responseHeaders[name] = value
+                        if (!name.equals("content-type", ignoreCase = true) &&
+                            !name.equals("content-length", ignoreCase = true) &&
+                            !name.equals("transfer-encoding", ignoreCase = true)
+                        ) {
+                            responseHeaders[name] = value
+                        }
                     }
 
                     // Add CORS and caching headers for WebView
@@ -509,15 +567,17 @@ class RemoteHubProxyHandler(
                 }
             }
         } catch (e: ConnectException) {
-            createErrorResponse(
-                GrpcStatus.UNAVAILABLE,
-                "Lost connection to Desktop Hub at ${config.host}:${config.port}. Ensure Antigravity desktop remains running."
-            )
+            fallbackCachedStreamResponseOrNull(request.path, backendId, request.headers["accept"] ?: request.headers["Accept"])
+                ?: createErrorResponse(
+                    GrpcStatus.UNAVAILABLE,
+                    "Lost connection to Desktop Hub at ${config.host}:${config.port}. Ensure Antigravity desktop remains running."
+                )
         } catch (e: SocketTimeoutException) {
-            createErrorResponse(
-                GrpcStatus.DEADLINE_EXCEEDED,
-                "Desktop Hub request to ${request.path} timed out."
-            )
+            fallbackCachedStreamResponseOrNull(request.path, backendId, request.headers["accept"] ?: request.headers["Accept"])
+                ?: createErrorResponse(
+                    GrpcStatus.DEADLINE_EXCEEDED,
+                    "Desktop Hub request to ${request.path} timed out."
+                )
         } catch (e: SSLHandshakeException) {
             createErrorResponse(
                 GrpcStatus.UNAUTHENTICATED,
@@ -529,10 +589,11 @@ class RemoteHubProxyHandler(
                 "Relayed RPC request was canceled by client."
             )
         } catch (e: IOException) {
-            createErrorResponse(
-                GrpcStatus.INTERNAL,
-                "I/O error communicating with Desktop Hub: ${e.message}"
-            )
+            fallbackCachedStreamResponseOrNull(request.path, backendId, request.headers["accept"] ?: request.headers["Accept"])
+                ?: createErrorResponse(
+                    GrpcStatus.INTERNAL,
+                    "I/O error communicating with Desktop Hub: ${e.message}"
+                )
         } catch (e: Exception) {
             createErrorResponse(
                 GrpcStatus.UNKNOWN,
@@ -545,6 +606,44 @@ class RemoteHubProxyHandler(
     private fun JsonElement?.asArrOrNull(): JsonArray? = this as? JsonArray
     private fun JsonElement?.asStrOrNull(): String? = (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
     private fun JsonElement?.asIntOrNull(): Int? = (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.intOrNull
+
+    private fun fallbackCachedStreamResponseOrNull(
+        path: String,
+        backendId: Int,
+        acceptHeader: String?
+    ): GrpcWebHttpResponse? {
+        val cache = conversationCache ?: return null
+        val respContentType = if (acceptHeader?.contains("connect+", ignoreCase = true) == true) {
+            "application/connect+json"
+        } else {
+            GrpcWebFrameCodec.CONTENT_TYPE_GRPC_WEB_JSON
+        }
+        val headers = mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Cache-Control" to "no-cache"
+        )
+        return when {
+            path.endsWith("/JetboxSubscribeToSummaries") &&
+                cache.getCachedAllSummariesMap(backendId)?.isNotEmpty() == true -> {
+                val body = transformSummariesStreamWithCache(
+                    ByteArray(0),
+                    respContentType,
+                    includeZeroProjectCache = (backendId == 0),
+                    backendId = backendId
+                )
+                runCatching {
+                    android.util.Log.i("RemoteHubProxy", "JetboxSubscribeToSummaries fallback from cache backend=$backendId bytes=${body.size}")
+                }
+                GrpcWebHttpResponse(200, respContentType, headers, body, bodyStream = null)
+            }
+            path.endsWith("/ProjectUpdatesStream") &&
+                (cache.getCachedProjectListIds(backendId) + cache.getCachedProjectListIds(2)).isNotEmpty() -> {
+                val body = transformProjectUpdatesStreamWithCache(ByteArray(0), respContentType, backendId)
+                GrpcWebHttpResponse(200, respContentType, headers, body, bodyStream = null)
+            }
+            else -> null
+        }
+    }
 
     private fun parseBackendId(reqJson: JsonObject?): Int {
         val el = reqJson?.get("backend") ?: return 0
@@ -652,16 +751,19 @@ class RemoteHubProxyHandler(
     private fun transformSummariesStreamWithCache(
         rawBytes: ByteArray,
         contentType: String,
-        includeZeroProjectCache: Boolean = true
+        includeZeroProjectCache: Boolean = true,
+        backendId: Int = 0
     ): ByteArray {
         val cache = conversationCache ?: return rawBytes
         return transformUnaryJsonResponse(rawBytes, contentType, synthesizeIfEmpty = true) { root ->
             val updates = root["updates"].asObjOrNull()
             val effective = if (updates == null || updates.isEmpty()) {
-                cache.getCachedAllSummariesMap() ?: (updates ?: JsonObject(emptyMap()))
+                cache.getCachedAllSummariesMap(backendId) ?: (updates ?: JsonObject(emptyMap()))
             } else {
-                cache.updateFromSummariesMap(updates)
-                cache.cacheAllSummariesMap(updates)
+                if (backendId == 0) {
+                    cache.updateFromSummariesMap(updates)
+                }
+                cache.cacheAllSummariesMap(updates, backendId)
                 updates
             }
             val merged = if (includeZeroProjectCache) cache.mergeIntoSummariesMap(effective) else effective
@@ -902,7 +1004,10 @@ class RemoteHubProxyHandler(
                 val fullBaos = ByteArrayOutputStream()
                 val responseHeaders = mutableMapOf<String, String>()
                 for ((name, value) in response.headers) {
-                    if (!name.equals("content-type", ignoreCase = true)) {
+                    if (!name.equals("content-type", ignoreCase = true) &&
+                        !name.equals("content-length", ignoreCase = true) &&
+                        !name.equals("transfer-encoding", ignoreCase = true)
+                    ) {
                         responseHeaders[name] = value
                     }
                 }

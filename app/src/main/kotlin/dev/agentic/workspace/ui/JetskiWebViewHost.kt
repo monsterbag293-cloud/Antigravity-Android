@@ -133,31 +133,42 @@ fun JetskiWebViewHost(
     var isPageLoading by remember { mutableStateOf(true) }
     var canNavigateBack by remember { mutableStateOf(false) }
     var loadErrorDescription by remember { mutableStateOf<String?>(null) }
+    var isDarkTheme by remember { mutableStateOf(true) }
     var decoratorActive by remember { mutableStateOf(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     var pendingFilePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     var pendingPermissionRequest by remember { mutableStateOf<PermissionRequest?>(null) }
 
+    val importRestartScope = androidx.compose.runtime.rememberCoroutineScope()
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { treeUri ->
-        val guestPath = if (treeUri != null) {
+        val (guestPath, importedChats) = if (treeUri != null) {
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     treeUri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
             }
-            dev.agentic.workspace.provider.AntigravityDocumentsProvider.importExistingFolderFromTreeUri(
+            dev.agentic.workspace.provider.AntigravityDocumentsProvider.importExistingFolderFromTreeUriWithStatus(
                 context,
                 treeUri
             )
         } else {
-            null
+            null to false
         }
         val quoted = if (guestPath != null) JSONObject.quote(guestPath) else "null"
         webViewRef?.evaluateJavascript("window.__resolveAndroidFolderPicker?.($quoted);", null)
+        if (importedChats && backendLifecycleManager != null) {
+            importRestartScope.launch {
+                // Allow the frontend to register the imported project before restarting language_server
+                // so newly copied .db files in antigravity/conversations/ are indexed immediately.
+                kotlinx.coroutines.delay(1500)
+                backendLifecycleManager.restartBackend()
+                webViewRef?.reload()
+            }
+        }
     }
 
     val fileChooserLauncher = rememberLauncherForActivityResult(
@@ -646,10 +657,14 @@ fun JetskiWebViewHost(
                     fun setDarkTheme(isDark: Boolean) {
                         mainHandler.post {
                             try {
+                                isDarkTheme = isDark
                                 this@apply.setBackgroundColor(
                                     if (isDark) android.graphics.Color.BLACK else android.graphics.Color.WHITE
                                 )
                                 val window = (context as? Activity)?.window ?: return@post
+                                @Suppress("DEPRECATION")
+                                window.navigationBarColor =
+                                    if (isDark) android.graphics.Color.BLACK else android.graphics.Color.WHITE
                                 val controller = androidx.core.view.WindowCompat.getInsetsController(window, this@apply)
                                 controller.isAppearanceLightStatusBars = !isDark
                                 controller.isAppearanceLightNavigationBars = !isDark
@@ -1066,11 +1081,13 @@ fun JetskiWebViewHost(
         }
     }
 
+    val hostBackgroundColor = if (isDarkTheme) Color(0xFF000000) else Color(0xFFFFFFFF)
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.imeAnimationTarget)
-            .background(Color(0xFF000000))
+            .background(hostBackgroundColor)
             .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         // Main WebView + Loading / Error Overlay
@@ -1078,7 +1095,7 @@ fun JetskiWebViewHost(
             modifier = Modifier
                 .fillMaxSize()
                 .weight(1f)
-                .background(Color(0xFF000000))
+                .background(hostBackgroundColor)
         ) {
             AndroidView(
                 factory = {

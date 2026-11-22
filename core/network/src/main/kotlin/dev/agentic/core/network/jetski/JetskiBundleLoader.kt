@@ -137,6 +137,17 @@ class JetskiBundleLoader {
         @Volatile
         private var cachedPatchedMainJs: ByteArray? = null
 
+        init {
+            // Pre-warm patched main.js in background so the WebView's initial load doesn't block ~1.5s
+            Thread({
+                runCatching {
+                    if (cachedPatchedMainJs == null && entries.containsKey("main.js")) {
+                        readAssetBytes("main.js")?.let { patchMainJsForMobile(it) }
+                    }
+                }
+            }, "agy-bundle-prewarm").start()
+        }
+
         private fun patchMainJsForMobile(raw: ByteArray): ByteArray {
             cachedPatchedMainJs?.let { return it }
             var text = raw.toString(Charsets.UTF_8)
@@ -144,6 +155,13 @@ class JetskiBundleLoader {
             val splitReplacement = """splitView:{feature:{enabled:!1},applyAll:[{runtimeGating:{customFlag:"enable-split-view"},feature:{enabled:!1}},{runtimeGating:{isDevMode:!0},feature:{enabled:!1}}"""
             if (text.contains(splitTarget)) {
                 text = text.replace(splitTarget, splitReplacement)
+            }
+            // Keep cloud chats on the full expandable hierarchy view (matching local chats)
+            // instead of collapsing tool calls into single-line ephemeralToolCalls.
+            val cloudHierarchyTarget = """hideDiffViewsInConversation:!0,ephemeralToolCalls:!0,ephemeralProgressTextMode:"disclosure",hideSubagents:!0"""
+            val cloudHierarchyReplacement = """hideDiffViewsInConversation:!1,ephemeralToolCalls:!1,ephemeralProgressTextMode:"none",hideSubagents:!1"""
+            if (text.contains(cloudHierarchyTarget)) {
+                text = text.replace(cloudHierarchyTarget, cloudHierarchyReplacement)
             }
             // Keep Antigravity's V4 zi.Electron sidebar/UI on Android (no mobileLayout web shell)
             // while enabling UDb iframe Web Preview/Browser directly inside Electron aux panes.
@@ -401,7 +419,7 @@ class JetskiBundleLoader {
                 max-width: 100% !important;
                 z-index: 50 !important;
                 background: var(--sidebar, var(--background, #000000)) !important;
-                box-shadow: 0 0 30px rgba(0,0,0,0.45) !important;
+                box-shadow: none !important;
                 will-change: transform !important;
                 transform: translate3d(-100%, 0, 0) !important;
                 pointer-events: none !important;
@@ -556,13 +574,19 @@ class JetskiBundleLoader {
               body:not(.dark) .agy-inset-shell,
               body:not(.dark) .agy-sheet[data-sheet-inset],
               body:not(.dark) [data-testid="mobile-layout"],
-              body:not(.dark) [data-testid="sidebar-split"] > .flex:first-child {
-                --shell-canvas: var(--background, #ffffff);
-                --sidebar: var(--background, #ffffff);
-                background-color: var(--background, #ffffff) !important;
+              body:not(.dark) [data-testid="sidebar-split"],
+              body:not(.dark) [data-testid="sidebar-split"] > .flex:first-child,
+              body:not(.dark) [role="navigation"],
+              body:not(.dark) [role="navigation"] .bg-sidebar {
+                --shell-canvas: #ffffff !important;
+                --sidebar: #ffffff !important;
+                --card: #ffffff !important;
+                background-color: #ffffff !important;
               }
-              [data-testid="sidebar-split"] .bg-gradient-to-b.from-card.to-transparent,
-              [data-testid="sidebar-split"] .bg-gradient-to-t.from-card.to-transparent {
+              [data-testid="sidebar-split"] .bg-gradient-to-b,
+              [data-testid="sidebar-split"] .bg-gradient-to-t,
+              [role="navigation"] .bg-gradient-to-b,
+              [role="navigation"] .bg-gradient-to-t {
                 display: none !important;
               }
               button, [role="button"] {
@@ -1692,9 +1716,11 @@ class JetskiBundleLoader {
                 append("        if (!isDraggingDrawer) {\n")
                 append("          if (isTouchTrackingSidebar && dxLeft > 10 && dy < dxLeft * 1.15) {\n")
                 append("            isDraggingDrawer = true;\n")
+                append("            window.__agyDraggingDrawer = true;\n")
                 append("            drawerDragDir = -1;\n")
                 append("          } else if (!isTouchTrackingSidebar && dxRight > 10 && dy < dxRight * 1.15) {\n")
                 append("            isDraggingDrawer = true;\n")
+                append("            window.__agyDraggingDrawer = true;\n")
                 append("            drawerDragDir = 1;\n")
                 append("            drawerSavedVisibility = sb.style.visibility;\n")
                 append("            sb.style.setProperty('visibility', 'visible', 'important');\n")
@@ -1724,13 +1750,35 @@ class JetskiBundleLoader {
                 append("        const sb = document.querySelector('.agy-shell .flex-1 [data-testid=sidebar-split] > .flex:first-child');\n")
                 append("        if (isDraggingDrawer) {\n")
                 append("          e.stopPropagation();\n")
-                append("          clearDrawerInlineStyles(sb);\n")
                 append("          const w = window.innerWidth || 411;\n")
                 append("          const threshold = Math.min(60, w * 0.16);\n")
                 append("          const shouldToggle = (drawerDragDir === 1 && dxRight > threshold) || (drawerDragDir === -1 && dxLeft > threshold);\n")
+                append("          const dir = drawerDragDir;\n")
                 append("          isDraggingDrawer = false;\n")
+                append("          window.__agyDraggingDrawer = false;\n")
                 append("          drawerDragDir = 0;\n")
-                append("          if (shouldToggle) toggleSidebarSafely();\n")
+                append("          if (shouldToggle) {\n")
+                append("            const toggleBtn = document.querySelector('[aria-label=\"Toggle Sidebar\"]');\n")
+                append("            if (toggleBtn) toggleBtn.click();\n")
+                append("          }\n")
+                append("          if (sb) {\n")
+                append("            sb.style.setProperty('transition', 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)', 'important');\n")
+                append("            const targetPct = shouldToggle ? (dir === 1 ? '0%' : '-100%') : (dir === 1 ? '-100%' : '0%');\n")
+                append("            sb.style.setProperty('transform', 'translate3d(' + targetPct + ', 0, 0)', 'important');\n")
+                append("          }\n")
+                append("          isSidebarAnimating = true;\n")
+                append("          setTimeout(() => {\n")
+                append("            isSidebarAnimating = false;\n")
+                append("            if (sb) {\n")
+                append("              sb.style.removeProperty('transition');\n")
+                append("              sb.style.removeProperty('transform');\n")
+                append("              if (dir === 1) {\n")
+                append("                if (drawerSavedVisibility) sb.style.visibility = drawerSavedVisibility;\n")
+                append("                else sb.style.removeProperty('visibility');\n")
+                append("              }\n")
+                append("            }\n")
+                append("            scheduleMobileUiSync();\n")
+                append("          }, 235);\n")
                 append("          return;\n")
                 append("        }\n")
                 append("        const dialog = document.querySelector('div[role=\"dialog\"]:not([data-testid=\"bottom-sheet\"])');\n")
@@ -1833,7 +1881,7 @@ class JetskiBundleLoader {
                 append("      }\n")
                 append("      let uiSyncRaf = 0;\n")
                 append("      const scheduleMobileUiSync = () => {\n")
-                append("        if (uiSyncRaf) return;\n")
+                append("        if (uiSyncRaf || isDraggingDrawer || isSidebarAnimating) return;\n")
                 append("        uiSyncRaf = requestAnimationFrame(() => { uiSyncRaf = 0; syncMobileUiState(); });\n")
                 append("      };\n")
                 append("      const uiObs = new MutationObserver(scheduleMobileUiSync);\n")
@@ -2302,9 +2350,14 @@ class JetskiBundleLoader {
                 append("          return;\n")
                 append("        }\n")
                 append("        if (!pending || e.pointerId !== pending.pointerId) return;\n")
-                append("        if (Math.hypot(e.clientX - pending.clientX, e.clientY - pending.clientY) > 8) {\n")
+                append("        const dx = e.clientX - pending.clientX;\n")
+                append("        const dy = e.clientY - pending.clientY;\n")
+                append("        if (Math.hypot(dx, dy) > 8) {\n")
                 append("          const p = pending;\n")
                 append("          clearPending();\n")
+                append("          if (window.__agyDraggingDrawer || Math.abs(dx) > Math.abs(dy)) {\n")
+                append("            return;\n")
+                append("          }\n")
                 append("          scrolling = {\n")
                 append("            pointerId: p.pointerId,\n")
                 append("            scrollBox: p.scrollBox,\n")
@@ -2314,7 +2367,7 @@ class JetskiBundleLoader {
                 append("            moved: true\n")
                 append("          };\n")
                 append("          if (scrolling.scrollBox) {\n")
-                append("            scrolling.scrollBox.scrollTop -= (e.clientY - p.clientY);\n")
+                append("            scrolling.scrollBox.scrollTop -= dy;\n")
                 append("          }\n")
                 append("          e.stopPropagation();\n")
                 append("        }\n")
@@ -2332,6 +2385,26 @@ class JetskiBundleLoader {
                 append("      }\n")
                 append("      document.addEventListener('pointerup', finishTouch, true);\n")
                 append("      document.addEventListener('pointercancel', finishTouch, true);\n")
+                append("    })();\n")
+                append("    (function reloadOnceAfterOnboarding() {\n")
+                append("      if (window.__agyOnboardingReloadHook) return;\n")
+                append("      window.__agyOnboardingReloadHook = true;\n")
+                append("      if (location.pathname === '/onboarding') {\n")
+                append("        try { sessionStorage.setItem('agy_was_onboarding', '1'); } catch (_) {}\n")
+                append("      }\n")
+                append("      function checkLeaveOnboarding() {\n")
+                append("        try {\n")
+                append("          if (sessionStorage.getItem('agy_was_onboarding') === '1' && location.pathname !== '/onboarding') {\n")
+                append("            sessionStorage.removeItem('agy_was_onboarding');\n")
+                append("            setTimeout(function() { location.reload(); }, 450);\n")
+                append("          }\n")
+                append("        } catch (_) {}\n")
+                append("      }\n")
+                append("      const origPush = history.pushState;\n")
+                append("      const origReplace = history.replaceState;\n")
+                append("      history.pushState = function() { const r = origPush.apply(this, arguments); checkLeaveOnboarding(); return r; };\n")
+                append("      history.replaceState = function() { const r = origReplace.apply(this, arguments); checkLeaveOnboarding(); return r; };\n")
+                append("      window.addEventListener('popstate', checkLeaveOnboarding);\n")
                 append("    })();\n")
                 append("  }\n")
             }
