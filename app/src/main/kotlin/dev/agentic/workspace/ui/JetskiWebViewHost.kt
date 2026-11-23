@@ -270,6 +270,18 @@ fun JetskiWebViewHost(
             addJavascriptInterface(
                 object {
                     @JavascriptInterface
+                    fun triggerHaptic(type: String) {
+                        val hapticType = when (type.lowercase()) {
+                            "light", "tick" -> dev.agentic.core.designsystem.HapticEngine.HapticType.LIGHT_TICK
+                            "heavy", "snap" -> dev.agentic.core.designsystem.HapticEngine.HapticType.HEAVY_SNAP
+                            "confirm", "success" -> dev.agentic.core.designsystem.HapticEngine.HapticType.CONFIRMATION
+                            "reject", "error" -> dev.agentic.core.designsystem.HapticEngine.HapticType.REJECT_ERROR
+                            else -> dev.agentic.core.designsystem.HapticEngine.HapticType.STANDARD_CLICK
+                        }
+                        dev.agentic.core.designsystem.HapticEngine.perform(hapticType, this@apply)
+                    }
+
+                    @JavascriptInterface
                     fun openNativeControls() {
                         post { onOpenHostControls() }
                     }

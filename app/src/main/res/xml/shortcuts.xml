@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_chat"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_new_chat"
+        android:shortcutShortLabel="@string/shortcut_new_chat_short"
+        android:shortcutLongLabel="@string/shortcut_new_chat_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.agentic.workspace"
+            android:targetClass="dev.agentic.workspace.MainActivity"
+            android:data="antigravity://new_chat" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="workspace"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_workspace"
+        android:shortcutShortLabel="@string/shortcut_workspace_short"
+        android:shortcutLongLabel="@string/shortcut_workspace_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.agentic.workspace"
+            android:targetClass="dev.agentic.workspace.MainActivity"
+            android:data="antigravity://workspace" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_settings"
+        android:shortcutShortLabel="@string/shortcut_settings_short"
+        android:shortcutLongLabel="@string/shortcut_settings_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.agentic.workspace"
+            android:targetClass="dev.agentic.workspace.MainActivity"
+            android:data="antigravity://settings" />
+    </shortcut>
+</shortcuts>

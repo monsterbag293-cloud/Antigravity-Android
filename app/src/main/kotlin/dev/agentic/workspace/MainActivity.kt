@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dev.agentic.core.designsystem.HapticEngine.init(applicationContext)
         enableEdgeToEdge()
         // Ensure system navigation bar is pure black matching Antigravity theme
         window.navigationBarColor = android.graphics.Color.BLACK

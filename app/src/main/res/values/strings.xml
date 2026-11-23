@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Antigravity</string>
+    <string name="shortcut_new_chat_short">New Chat</string>
+    <string name="shortcut_new_chat_long">Start New Conversation</string>
+    <string name="shortcut_workspace_short">Workspace</string>
+    <string name="shortcut_workspace_long">Open Active Workspace</string>
+    <string name="shortcut_settings_short">Settings</string>
+    <string name="shortcut_settings_long">Open App Settings</string>
+</resources>
