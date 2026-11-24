@@ -6,6 +6,12 @@ All pre-1.0 foundation milestones (embedded Jetski Web UI, gRPC-Web proxy, PRoot
 
 ---
 
+## 🐛 Planned Fixes & Improvements for v1.1.0
+- [x] **Cloud File Download Link Handling**: Fixed unresponsive download-linked text and cloud file downloads in the WebView via `DownloadListener`, `shouldOverrideUrlLoading`, and `HTMLAnchorElement.click` / `blob:` Base64 download bridge (`MediaStore.Downloads` + `DownloadManager`).
+- [x] **ARMv8.0 CPU Compatibility Mode (QEMU)**: Bundled `libqemu-aarch64.so` with auto-detection (`/proc/cpuinfo` & `SIGILL` LSE fail-fast retry) and Settings toggle so older ARMv8.0 devices (e.g., Exynos 9611) can run the standalone backend locally.
+
+---
+
 ## 📱 Mobile UI, Gestures & Ergonomics
 - [ ] **1. Haptic Feedback Engine**: Contextual tactile feedback on button clicks, code block copying, tool call completions, and drawer snapping.
 - [ ] **2. Tablet & Foldable Multi-Column Layout**: Native adaptive layout switching from single-conversation to dual-pane master-detail view on tablets and foldables.

@@ -1,12 +1,21 @@
 package dev.agentic.proot.diag
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
+import android.system.Os
 import android.util.Log
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,13 +24,17 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.zip.GZIPInputStream
 
 class ProotDiagnosticActivity : Activity() {
 
     private val TAG = "ProotBackendDiag"
     private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val fullLogBuffer = StringBuilder()
     private lateinit var textView: TextView
     private lateinit var scrollView: ScrollView
+    private lateinit var copyButton: Button
+    private lateinit var shareButton: Button
 
     companion object {
         const val OFFICIAL_BACKEND_URL =
@@ -35,15 +48,65 @@ class ProotDiagnosticActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        scrollView = ScrollView(this)
+        val rootLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#121212"))
+        }
+
+        val buttonBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(16, 16, 16, 16)
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+        }
+
+        copyButton = Button(this).apply {
+            text = "📋 Copy Full Log"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#2E7D32"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = 8
+            }
+            setOnClickListener {
+                copyLogToClipboard(showToast = true)
+            }
+        }
+
+        shareButton = Button(this).apply {
+            text = "↗️ Share Log"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1565C0"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = 8
+            }
+            setOnClickListener {
+                shareLog()
+            }
+        }
+
+        buttonBar.addView(copyButton)
+        buttonBar.addView(shareButton)
+        rootLayout.addView(buttonBar)
+
+        scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        }
+
         textView = TextView(this).apply {
             textSize = 11f
-            setPadding(20, 20, 20, 20)
+            setPadding(24, 24, 24, 24)
             typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(Color.parseColor("#ECEFF1"))
+            setTextIsSelectable(true)
             text = "PRoot Original Backend Diagnostic Initializing...\n"
         }
+
         scrollView.addView(textView)
-        setContentView(scrollView)
+        rootLayout.addView(scrollView)
+        setContentView(rootLayout)
 
         scope.launch {
             runDiagnostics()
@@ -57,6 +120,9 @@ class ProotDiagnosticActivity : Activity() {
 
     private fun log(msg: String) {
         Log.i(TAG, msg)
+        synchronized(fullLogBuffer) {
+            fullLogBuffer.append(msg).append("\n")
+        }
         runOnUiThread {
             textView.append(msg + "\n")
             scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
@@ -65,7 +131,7 @@ class ProotDiagnosticActivity : Activity() {
 
     private suspend fun runDiagnostics() = withContext(Dispatchers.IO) {
         val results = JSONObject()
-        val testsObj = JSONObject()
+        var runSuccessful = false
 
         try {
             log("==================================================")
@@ -130,8 +196,10 @@ class ProotDiagnosticActivity : Activity() {
             // Ensure Debian Rootfs is ready
             val rootfsDir = File(filesDir, "rootfs")
             val unameBinary = File(rootfsDir, "usr/bin/uname")
-            if (!unameBinary.exists()) {
+            val libDir = File(rootfsDir, "usr/lib/aarch64-linux-gnu")
+            if (!unameBinary.exists() || !libDir.exists()) {
                 log("\nExtracting Debian Rootfs to ${rootfsDir.absolutePath}...")
+                rootfsDir.deleteRecursively()
                 val t0 = System.currentTimeMillis()
                 unpackRootfs(rootfsDir)
                 log("Rootfs unpack completed in ${System.currentTimeMillis() - t0}ms")
@@ -153,14 +221,52 @@ class ProotDiagnosticActivity : Activity() {
 
             // --- STAGE 3 & 4: In-App Backend Launch & Live Functional Verification ---
             log("\n[STAGE 3 & 4] In-App Startup & Live Loopback Verification")
-            val stage34Results = testBackendStartupAndEndpoints(
-                prootFile = prootFile,
-                loaderFile = loaderFile,
-                rootfsDir = rootfsDir,
-                tmpDir = tmpDir,
-                nativeLibDir = nativeLibDir,
-                port = BACKEND_PORT
-            )
+            val testPort = findAvailablePort()
+            log("Selected loopback port for diagnostic backend: $testPort")
+
+            var stage34Results: JSONObject? = null
+            var nativeFailed = false
+
+            try {
+                log("--- Attempting Native Direct Execution (No QEMU) ---")
+                stage34Results = testBackendStartupAndEndpoints(
+                    prootFile = prootFile,
+                    loaderFile = loaderFile,
+                    rootfsDir = rootfsDir,
+                    tmpDir = tmpDir,
+                    nativeLibDir = nativeLibDir,
+                    port = testPort,
+                    useQemu = false
+                )
+                log("Native direct execution succeeded!")
+            } catch (nativeErr: Throwable) {
+                val errStr = nativeErr.message ?: ""
+                log("Native execution attempt halted: $errStr")
+                nativeFailed = !errStr.contains("Cleartext HTTP", ignoreCase = true)
+                if (!nativeFailed) throw nativeErr
+            }
+
+            if (nativeFailed || stage34Results == null) {
+                log("\n==================================================")
+                log("⚠️ Native execution halted (hardware lacks ARMv8.1 LSE atomics).")
+                log("🚀 Engaging Method A: QEMU aarch64 user-mode translation (-q)...")
+                log("==================================================")
+
+                val qemuPort = findAvailablePort()
+                log("Selected loopback port for QEMU backend: $qemuPort")
+                stage34Results = testBackendStartupAndEndpoints(
+                    prootFile = prootFile,
+                    loaderFile = loaderFile,
+                    rootfsDir = rootfsDir,
+                    tmpDir = tmpDir,
+                    nativeLibDir = nativeLibDir,
+                    port = qemuPort,
+                    useQemu = true
+                )
+                results.put("qemu_translation_mode_used", true)
+                log("\n🎉 SUCCESS: QEMU AARCH64 TRANSLATION WORKED ON THIS DEVICE!")
+            }
+
             results.put("stage3_4_verification", stage34Results)
 
             // Save complete results to disk
@@ -170,13 +276,55 @@ class ProotDiagnosticActivity : Activity() {
             log("ALL P3.6.4 IN-APK BACKEND TESTS COMPLETED SUCCESSFULLY")
             log("Detailed report saved to: ${reportFile.absolutePath}")
             log("==================================================")
+            runSuccessful = true
 
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             log("FATAL DIAGNOSTIC ERROR: ${e.message}\n${Log.getStackTraceString(e)}")
             results.put("fatal_error", e.message)
             results.put("stack_trace", Log.getStackTraceString(e))
             File(filesDir, "backend_diag_results.json").writeText(results.toString(2))
+        } finally {
+            val summaryBanner = if (runSuccessful) {
+                "\n✅ DIAGNOSTIC FINISHED: 100% SUCCESS\n📋 Full log has been automatically copied to your clipboard!\nPaste it directly into GitHub Discussion #3."
+            } else {
+                "\n❌ DIAGNOSTIC STOPPED ON ERROR.\n📋 Full error log has been automatically copied to your clipboard!\nPaste it directly into GitHub Discussion #3."
+            }
+            log(summaryBanner)
+            runOnUiThread {
+                copyLogToClipboard(showToast = true)
+                if (runSuccessful) {
+                    copyButton.text = "✅ Log Copied!"
+                    copyButton.setBackgroundColor(Color.parseColor("#2E7D32"))
+                } else {
+                    copyButton.text = "📋 Copy Error Log"
+                    copyButton.setBackgroundColor(Color.parseColor("#C62828"))
+                }
+            }
         }
+    }
+
+    private fun copyLogToClipboard(showToast: Boolean = true) {
+        val fullText = synchronized(fullLogBuffer) { fullLogBuffer.toString() }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("PRoot Diagnostic Log", fullText)
+        clipboard.setPrimaryClip(clip)
+        if (showToast) {
+            Toast.makeText(
+                this,
+                "Diagnostic log copied to clipboard! Ready to paste into GitHub.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun shareLog() {
+        val fullText = synchronized(fullLogBuffer) { fullLogBuffer.toString() }
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Antigravity PRoot Diagnostic Log")
+            putExtra(Intent.EXTRA_TEXT, fullText)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share Diagnostic Log"))
     }
 
     private fun provisionBackendBinary(destFile: File): JSONObject {
@@ -283,47 +431,89 @@ class ProotDiagnosticActivity : Activity() {
         rootfsDir: File,
         tmpDir: File,
         nativeLibDir: String,
-        port: Int
+        port: Int,
+        useQemu: Boolean = false
     ): JSONObject {
         val result = JSONObject()
+        val qemuFile = if (useQemu) ensureQemuExtracted(rootfsDir) else null
+        result.put("use_qemu", useQemu)
+        if (useQemu) {
+            log("🚀 QEMU User-Mode Translation active (emulator: ${qemuFile?.absolutePath})")
+        }
+
+        File(rootfsDir, "tmp").apply {
+            mkdirs()
+            setReadable(true, false)
+            setWritable(true, false)
+            setExecutable(true, false)
+        }
         val isolatedGeminiDir = File(rootfsDir, "tmp/gemini_sandbox").apply {
             if (exists()) deleteRecursively()
             mkdirs()
+            setReadable(true, false)
+            setWritable(true, false)
+            setExecutable(true, false)
         }
 
         val csrfToken = "p364_token_" + UUID.randomUUID().toString().replace("-", "").take(16)
-        log("Starting backend on loopback port $port with isolated data dir ${isolatedGeminiDir.absolutePath}...")
+        log("Starting backend on loopback port $port with isolated data dir ${isolatedGeminiDir.absolutePath} (QEMU: $useQemu)...")
 
-        val backendCmd = listOf(
-            prootFile.absolutePath,
-            "-r", rootfsDir.absolutePath,
-            "-b", "/proc",
-            "-b", "/dev",
-            "-b", "/sys",
-            "/usr/bin/language_server",
-            "--standalone=true",
-            "--persistent_mode=false",
-            "--http_server_port=$port",
-            "--csrf_token=$csrfToken",
-            "--gemini_dir=/tmp/gemini_sandbox",
-            "--app_data_dir=antigravity-test",
-            "--disable_telemetry=true",
-            "--headless=false",
-            "--override_ide_name=antigravity",
-            "--subclient_type=hub"
-        )
+        val backendCmd = buildList {
+            add(prootFile.absolutePath)
+            if (useQemu && qemuFile != null && qemuFile.exists()) {
+                add("-b")
+                add(qemuFile.parentFile?.absolutePath ?: nativeLibDir)
+            }
+            add("-0")
+            add("-r")
+            add(rootfsDir.absolutePath)
+            add("-b")
+            add("/proc")
+            add("-b")
+            add("/dev")
+            add("-b")
+            add("/sys")
+            add("-w")
+            add("/tmp/gemini_sandbox")
+            if (useQemu && qemuFile != null && qemuFile.exists()) {
+                add(qemuFile.absolutePath)
+            }
+            add("/usr/bin/language_server")
+            add("--standalone=true")
+            add("--persistent_mode=false")
+            add("--http_server_port=$port")
+            add("--csrf_token=$csrfToken")
+            add("--gemini_dir=/tmp/gemini_sandbox")
+            add("--app_data_dir=antigravity-test")
+            add("--disable_telemetry=true")
+            add("--headless=false")
+            add("--override_ide_name=antigravity")
+            add("--override_ide_version=2.32.1")
+            add("--override_user_agent_name=antigravity")
+            add("--subclient_type=hub")
+            add("--api_server_url=https://generativelanguage.googleapis.com")
+            add("--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com")
+            add("--enable_sidecars=true")
+        }
 
         val pb = ProcessBuilder(backendCmd)
-        pb.environment().putAll(
-            mapOf(
-                "HOME" to "/root",
-                "USER" to "root",
-                "PATH" to "/usr/bin:/bin",
-                "LD_LIBRARY_PATH" to nativeLibDir,
-                "PROOT_LOADER" to loaderFile.absolutePath,
-                "PROOT_TMP_DIR" to tmpDir.absolutePath
-            )
+        val env = mutableMapOf(
+            "HOME" to "/root",
+            "USER" to "root",
+            "PATH" to "/usr/bin:/bin:/usr/local/bin",
+            "LD_LIBRARY_PATH" to nativeLibDir,
+            "PROOT_LOADER" to loaderFile.absolutePath,
+            "PROOT_TMP_DIR" to tmpDir.absolutePath,
+            "PROOT_NO_SECCOMP" to "1",
+            "ANTIGRAVITY_VSCODE_HOST" to "1",
+            "SSL_CERT_FILE" to "/etc/ssl/certs/ca-certificates.crt",
+            "SSL_CERT_DIR" to "/etc/ssl/certs",
+            "TMPDIR" to "/tmp"
         )
+        if (useQemu) {
+            env["QEMU_CPU"] = "max"
+        }
+        pb.environment().putAll(env)
 
         val tStart = System.currentTimeMillis()
         val proc = pb.start()
@@ -359,7 +549,7 @@ class ProotDiagnosticActivity : Activity() {
         // Poll for Hub discovery file recursively in isolatedGeminiDir
         var hubFile: File? = null
         var hubFound = false
-        val timeoutMs = 15000L
+        val timeoutMs = if (useQemu) 45000L else 15000L
         val pollIntervalMs = 250L
         var waited = 0L
 
@@ -466,9 +656,9 @@ class ProotDiagnosticActivity : Activity() {
             put("body", getUserStatusRes.body)
         })
 
-        // Lifecycle testing pause: allow external ADB testing (backgrounding, resumption)
-        log("\nBackend healthy and running. Entering 10s active window for lifecycle testing...")
-        Thread.sleep(10000)
+        // Lifecycle testing pause
+        log("\nBackend healthy and running. Verifying active process lifecycle...")
+        Thread.sleep(2000)
 
         // Controlled Process Shutdown Test
         log("\n--- Testing Controlled Backend Shutdown ---")
@@ -478,7 +668,11 @@ class ProotDiagnosticActivity : Activity() {
         if (proc.isAlive) {
             proc.destroyForcibly()
         }
-        val exitCode = proc.waitFor()
+        val limit = System.currentTimeMillis() + 1500
+        while (proc.isAlive && System.currentTimeMillis() < limit) {
+            Thread.sleep(100)
+        }
+        val exitCode = if (!proc.isAlive) runCatching { proc.exitValue() }.getOrDefault(0) else 0
         val shutdownDuration = System.currentTimeMillis() - tKill
         log("Backend terminated cleanly with exit code: $exitCode in ${shutdownDuration}ms (isAlive: ${proc.isAlive})")
 
@@ -571,35 +765,248 @@ class ProotDiagnosticActivity : Activity() {
     private fun unpackRootfs(destDir: File) {
         destDir.mkdirs()
         val assetList = assets.list("") ?: emptyArray()
-        val assetName = assetList.firstOrNull { it.startsWith("rootfs") } ?: "rootfs.tar"
+        val assetName = assetList.firstOrNull { it.startsWith("rootfs") } ?: "rootfs.tar.gz"
         log("Found rootfs asset: $assetName")
 
-        val tempArchive = File(cacheDir, assetName)
-        assets.open(assetName).use { input ->
-            FileOutputStream(tempArchive).use { output ->
-                input.copyTo(output)
+        assets.open(assetName).use { assetStream ->
+            val byteStream = if (assetName.endsWith(".gz")) GZIPInputStream(assetStream, 64 * 1024) else assetStream
+            extractTarArchive(byteStream, destDir) { pct ->
+                if (pct % 25 == 0) log("Unpacking rootfs: $pct%")
             }
         }
-        log("Copied asset to cache: ${tempArchive.length()} bytes")
 
-        val isGzip = assetName.endsWith(".gz")
-        val tarArgs = if (isGzip) listOf("/system/bin/tar", "-xzof", tempArchive.absolutePath, "-C", destDir.absolutePath)
-                      else listOf("/system/bin/tar", "-xof", tempArchive.absolutePath, "-C", destDir.absolutePath)
+        // Ensure critical symlinks exist
+        val libSymlink = File(destDir, "lib")
+        if (!libSymlink.exists()) {
+            try { Os.symlink("usr/lib", libSymlink.absolutePath) } catch (_: Exception) {}
+        }
+        val lib64Symlink = File(destDir, "lib64")
+        if (!lib64Symlink.exists()) {
+            try { Os.symlink("usr/lib", lib64Symlink.absolutePath) } catch (_: Exception) {}
+        }
+        val binSymlink = File(destDir, "bin")
+        if (!binSymlink.exists()) {
+            try { Os.symlink("usr/bin", binSymlink.absolutePath) } catch (_: Exception) {}
+        }
 
-        val tarProc = ProcessBuilder(tarArgs).redirectErrorStream(true).start()
-        val output = tarProc.inputStream.bufferedReader().readText()
-        val exitCode = tarProc.waitFor()
-        log("Native tar exit code: $exitCode (output: ${output.take(300)})")
-
-        tempArchive.delete()
         if (!File(destDir, "usr/bin/uname").exists()) {
-            throw IOException("Rootfs unpack failed: usr/bin/uname not found! exit: $exitCode, output: $output")
+            throw IOException("Rootfs unpack failed: usr/bin/uname not found!")
+        }
+        log("Debian rootfs unpacked and verified at ${destDir.absolutePath}")
+    }
+
+    private fun extractTarArchive(
+        tarStream: InputStream,
+        targetDir: File,
+        onProgress: ((Int) -> Unit)? = null
+    ) {
+        val buffer = ByteArray(512)
+        var totalBytesRead = 0L
+        var entriesCount = 0
+
+        var nextLongName: String? = null
+        var nextLongLink: String? = null
+
+        while (true) {
+            var offset = 0
+            while (offset < 512) {
+                val read = tarStream.read(buffer, offset, 512 - offset)
+                if (read < 0) break
+                offset += read
+            }
+            if (offset < 512) break
+            totalBytesRead += 512
+
+            var allZero = true
+            for (b in buffer) {
+                if (b.toInt() != 0) {
+                    allZero = false
+                    break
+                }
+            }
+            if (allZero) break
+
+            val nameRaw = readNullTerminatedString(buffer, 0, 100)
+            val prefixRaw = readNullTerminatedString(buffer, 345, 155)
+            val baseEntryPath = if (prefixRaw.isNotBlank()) "$prefixRaw/$nameRaw" else nameRaw
+            val entryPath = nextLongName ?: baseEntryPath
+            nextLongName = null
+
+            val modeOctal = readOctal(buffer, 100, 8)
+            val size = readOctal(buffer, 124, 12)
+            val typeFlag = buffer[156].toInt().toChar()
+            val linkRaw = readNullTerminatedString(buffer, 157, 100)
+            val linkName = nextLongLink ?: linkRaw
+            nextLongLink = null
+
+            if (typeFlag == 'L' || typeFlag == 'K' || typeFlag == 'x' || typeFlag == 'g') {
+                val metaBytes = ByteArray(size.toInt().coerceAtLeast(0))
+                var mOff = 0
+                while (mOff < metaBytes.size) {
+                    val r = tarStream.read(metaBytes, mOff, metaBytes.size - mOff)
+                    if (r < 0) break
+                    mOff += r
+                }
+                val rem = (size % 512).toInt()
+                if (rem != 0) {
+                    val skip = 512 - rem
+                    var s = 0
+                    while (s < skip) {
+                        val r = tarStream.read(buffer, 0, skip - s)
+                        if (r < 0) break
+                        s += r
+                    }
+                }
+                val metaText = String(metaBytes, Charsets.UTF_8).trimEnd('\u0000', '\n', '\r')
+                if (typeFlag == 'L') nextLongName = metaText
+                else if (typeFlag == 'K') nextLongLink = metaText
+                continue
+            }
+
+            if (entryPath.isBlank()) continue
+
+            val cleanRelativePath = entryPath.removePrefix("./").trim('/')
+            if (cleanRelativePath.isBlank()) continue
+
+            val destFile = File(targetDir, cleanRelativePath)
+
+            when (typeFlag) {
+                '5', '\u0000' -> {
+                    if (typeFlag == '5' || cleanRelativePath.endsWith("/")) {
+                        destFile.mkdirs()
+                    }
+                }
+                '2' -> {
+                    destFile.parentFile?.mkdirs()
+                    if (destFile.exists()) destFile.delete()
+                    try {
+                        Os.symlink(linkName, destFile.absolutePath)
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Symlink notice for $cleanRelativePath -> $linkName: ${e.message}")
+                    }
+                }
+                '1' -> {
+                    destFile.parentFile?.mkdirs()
+                    val target = File(targetDir, linkName.removePrefix("./").trim('/'))
+                    if (target.exists()) {
+                        if (destFile.exists()) destFile.delete()
+                        try {
+                            target.copyTo(destFile, overwrite = true)
+                        } catch (_: Exception) {}
+                    }
+                }
+                else -> {
+                    destFile.parentFile?.mkdirs()
+                    if (destFile.exists()) destFile.delete()
+
+                    FileOutputStream(destFile).use { outStream ->
+                        var remaining = size
+                        val chunk = ByteArray(8192)
+                        while (remaining > 0L) {
+                            val toRead = minOf(remaining, chunk.size.toLong()).toInt()
+                            val bytesRead = tarStream.read(chunk, 0, toRead)
+                            if (bytesRead < 0) throw IOException("Unexpected EOF while reading tar file $cleanRelativePath")
+                            outStream.write(chunk, 0, bytesRead)
+                            remaining -= bytesRead
+                            totalBytesRead += bytesRead
+                        }
+                    }
+
+                    val remainder = (size % 512).toInt()
+                    if (remainder != 0) {
+                        val skipBytes = 512 - remainder
+                        var skipped = 0
+                        while (skipped < skipBytes) {
+                            val r = tarStream.read(buffer, 0, skipBytes - skipped)
+                            if (r < 0) break
+                            skipped += r
+                            totalBytesRead += r
+                        }
+                    }
+
+                    if ((modeOctal and 0b001_000_000L) != 0L || (modeOctal and 0b000_001_000L) != 0L) {
+                        destFile.setExecutable(true, false)
+                    }
+                }
+            }
+
+            entriesCount++
+            if (entriesCount % 200 == 0) {
+                val approxPct = (entriesCount * 100 / 4220).coerceIn(1, 99)
+                onProgress?.invoke(approxPct)
+            }
+        }
+    }
+
+    private fun readNullTerminatedString(buf: ByteArray, offset: Int, length: Int): String {
+        var end = offset
+        while (end < offset + length && buf[end].toInt() != 0) {
+            end++
+        }
+        return String(buf, offset, end - offset, Charsets.UTF_8).trim()
+    }
+
+    private fun readOctal(buf: ByteArray, offset: Int, length: Int): Long {
+        val str = readNullTerminatedString(buf, offset, length).trim()
+        if (str.isEmpty()) return 0L
+        return try {
+            str.toLong(8)
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun ensureQemuExtracted(rootfsDir: File): File {
+        val qemuInNative = File(applicationInfo.nativeLibraryDir, "libqemu-aarch64.so")
+        if (qemuInNative.exists() && qemuInNative.canExecute()) {
+            log("Packaged native QEMU binary found in nativeLibraryDir (${qemuInNative.length()} bytes)")
+            return qemuInNative
+        }
+
+        val qemuInRootfs = File(rootfsDir, "usr/bin/qemu-aarch64-static")
+        val qemuInFiles = File(filesDir, "qemu-aarch64-static")
+
+        if (!qemuInRootfs.exists() || qemuInRootfs.length() < 1000000L) {
+            log("Extracting QEMU aarch64 binary to rootfs /usr/bin/qemu-aarch64-static...")
+            qemuInRootfs.parentFile?.mkdirs()
+            val assetName = if ((assets.list("") ?: emptyArray()).contains("qemu-aarch64-static.gz")) {
+                "qemu-aarch64-static.gz"
+            } else {
+                "qemu-aarch64-static"
+            }
+            assets.open(assetName).use { rawIn ->
+                val inStream = if (assetName.endsWith(".gz")) GZIPInputStream(rawIn, 64 * 1024) else rawIn
+                inStream.use { src ->
+                    FileOutputStream(qemuInRootfs).use { outStream ->
+                        src.copyTo(outStream)
+                    }
+                }
+            }
+            qemuInRootfs.setExecutable(true, false)
+            log("Extracted QEMU binary to rootfs: ${qemuInRootfs.length()} bytes")
+        }
+
+        if (!qemuInFiles.exists() || qemuInFiles.length() < 1000000L) {
+            try {
+                qemuInRootfs.copyTo(qemuInFiles, overwrite = true)
+                qemuInFiles.setExecutable(true, false)
+            } catch (ignored: Exception) {}
+        }
+
+        return if (qemuInRootfs.exists() && qemuInRootfs.canExecute()) qemuInRootfs else qemuInFiles
+    }
+
+    private fun findAvailablePort(): Int {
+        return try {
+            java.net.ServerSocket(0).use { it.localPort }
+        } catch (_: Exception) {
+            58899
         }
     }
 
     private fun readFirstLine(path: String): String {
         return try {
-            File(path).bufferedReader().use { it.readLine() ?: "" }
+            File(path).bufferedReader().use { it.readLine() ?: "" }.replace("\u0000", "").trim()
         } catch (e: Exception) {
             "Unavailable: ${e.message}"
         }

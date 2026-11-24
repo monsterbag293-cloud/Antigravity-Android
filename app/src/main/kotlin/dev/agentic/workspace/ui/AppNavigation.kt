@@ -127,6 +127,7 @@ fun AppNavigationScaffold(
     val hostState by modeManager.state.collectAsState()
     val hubConnectionState by (hubConnectionManager?.connectionState ?: kotlinx.coroutines.flow.MutableStateFlow(HubConnectionState.Disconnected)).collectAsState()
     val localBackendState by (backendLifecycleManager?.backendState ?: kotlinx.coroutines.flow.MutableStateFlow(LocalBackendLifecycleManager.LocalBackendState.Stopped)).collectAsState()
+    val qemuCompatEnabled by (backendLifecycleManager?.qemuModeEnabled ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
     val latestAuthUrl by (backendLifecycleManager?.latestAuthUrl ?: kotlinx.coroutines.flow.MutableStateFlow(null)).collectAsState()
 
     val bundlePickerLauncher = rememberLauncherForActivityResult(
@@ -223,6 +224,7 @@ fun AppNavigationScaffold(
                         color = MaterialTheme.colorScheme.background
                     ) {
                         SettingsScreen(
+                            onClose = { showHostSettingsDialog = false },
                             secretStorage = secretStorage,
                             activeUiModeLabel = hostState.activeMode.displayTitle,
                             hasValidBundle = hostState.hasValidBundle,
@@ -233,6 +235,15 @@ fun AppNavigationScaffold(
                             hubConnectionState = hubConnectionState,
                             localBackendState = localBackendState,
                             latestAuthUrl = latestAuthUrl,
+                            qemuCompatEnabled = qemuCompatEnabled,
+                            onQemuCompatChange = { enabled ->
+                                backendLifecycleManager?.setQemuCompatibilityEnabled(enabled)
+                                if (backendLifecycleManager?.isRunning() == true) {
+                                    coroutineScope.launch {
+                                        backendLifecycleManager.restartBackend()
+                                    }
+                                }
+                            },
                             onBackendModeChange = { mode ->
                                 rpcHandler?.setBackendMode(mode)
                                 if (mode == BackendMode.STANDALONE_IN_APP_BACKEND && backendLifecycleManager?.isRunning() != true) {
@@ -482,6 +493,15 @@ fun AppNavigationScaffold(
                     hubConnectionState = hubConnectionState,
                     localBackendState = localBackendState,
                     latestAuthUrl = latestAuthUrl,
+                    qemuCompatEnabled = qemuCompatEnabled,
+                    onQemuCompatChange = { enabled ->
+                        backendLifecycleManager?.setQemuCompatibilityEnabled(enabled)
+                        if (backendLifecycleManager?.isRunning() == true) {
+                            coroutineScope.launch {
+                                backendLifecycleManager.restartBackend()
+                            }
+                        }
+                    },
                     onBackendModeChange = { mode ->
                         rpcHandler?.setBackendMode(mode)
                         if (mode == BackendMode.STANDALONE_IN_APP_BACKEND && backendLifecycleManager?.isRunning() != true) {

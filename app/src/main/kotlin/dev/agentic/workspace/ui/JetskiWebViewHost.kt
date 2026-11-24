@@ -704,6 +704,52 @@ fun JetskiWebViewHost(
                         openExternal(url)
                     }
 
+                    @JavascriptInterface
+                    fun downloadBase64File(base64OrDataUrl: String, fileName: String, mimeType: String) {
+                        Log.i("JetskiWebViewHost", "downloadBase64File fileName=$fileName mimeType=$mimeType")
+                        Thread({
+                            saveBase64DownloadToDevice(context, mainHandler, base64OrDataUrl, fileName, mimeType)
+                        }, "agy-blob-download").start()
+                    }
+
+                    @JavascriptInterface
+                    fun downloadUrl(url: String, filenameHint: String) {
+                        Log.i("JetskiWebViewHost", "downloadUrl url=$url hint=$filenameHint")
+                        mainHandler.post {
+                            if (url.startsWith("blob:") || url.startsWith("data:") || url.startsWith(requestInterceptor.virtualOrigin)) {
+                                val safeUrl = JSONObject.quote(url)
+                                val safeName = JSONObject.quote(filenameHint)
+                                this@apply.evaluateJavascript(
+                                    """
+                                    (function(){
+                                      var u=$safeUrl, fn=$safeName, b=window.__ANTIGRAVITY_ANDROID_BRIDGE__;
+                                      if (!b || !b.downloadBase64File) return;
+                                      fetch(u).then(function(r){ return r.blob(); }).then(function(blob){
+                                        var fr = new FileReader();
+                                        fr.onloadend = function(){ if (typeof fr.result==='string') b.downloadBase64File(fr.result, fn || 'download', blob.type || ''); };
+                                        fr.readAsDataURL(blob);
+                                      }).catch(function(e){});
+                                    })();
+                                    """.trimIndent(),
+                                    null
+                                )
+                            } else {
+                                val userAgent = this@apply.settings.userAgentString
+                                enqueueHttpDownloadToDevice(
+                                    context = context,
+                                    mainHandler = mainHandler,
+                                    url = url,
+                                    userAgent = userAgent,
+                                    contentDisposition = null,
+                                    mimeType = null,
+                                    filenameHint = filenameHint
+                                ) { fallbackUrl ->
+                                    openExternal(fallbackUrl)
+                                }
+                            }
+                        }
+                    }
+
                     private var activeSpeechSettled = true
                     private var activeSpeechPartial = ""
                     private var speechTimeoutRunnable: Runnable? = null
@@ -873,7 +919,91 @@ fun JetskiWebViewHost(
 
     DisposableEffect(webView, requestInterceptor, targetUrl, isHubReady) {
         webViewRef = webView
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
+            Log.i("JetskiWebViewHost", "onDownloadStart url=$url mime=$mimetype cd=$contentDisposition")
+            if (url.isNullOrBlank()) return@setDownloadListener
+            val guessedName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
+            if (url.startsWith("blob:") || url.startsWith("data:") || url.startsWith(requestInterceptor.virtualOrigin)) {
+                val safeUrl = JSONObject.quote(url)
+                val safeName = JSONObject.quote(guessedName)
+                val safeMime = JSONObject.quote(mimetype ?: "")
+                webView.evaluateJavascript(
+                    """
+                    (function(){
+                      var u=$safeUrl, fn=$safeName, mt=$safeMime, b=window.__ANTIGRAVITY_ANDROID_BRIDGE__;
+                      if (!b || !b.downloadBase64File) return;
+                      fetch(u).then(function(r){ return r.blob(); }).then(function(blob){
+                        var fr = new FileReader();
+                        fr.onloadend = function(){ if (typeof fr.result==='string') b.downloadBase64File(fr.result, fn, mt || blob.type || ''); };
+                        fr.readAsDataURL(blob);
+                      }).catch(function(e){
+                        if (u.startsWith('data:')) b.downloadBase64File(u, fn, mt);
+                      });
+                    })();
+                    """.trimIndent(),
+                    null
+                )
+            } else {
+                enqueueHttpDownloadToDevice(
+                    context = context,
+                    mainHandler = mainHandler,
+                    url = url,
+                    userAgent = userAgent,
+                    contentDisposition = contentDisposition,
+                    mimeType = mimetype,
+                    filenameHint = guessedName
+                ) { fallbackUrl ->
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                }
+            }
+        }
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                val reqUrl = request?.url?.toString() ?: return false
+                if (!request.isForMainFrame) return false
+                val isAppOrigin = reqUrl.startsWith(requestInterceptor.virtualOrigin) ||
+                    (!remoteHostUrl.isNullOrBlank() && reqUrl.startsWith(remoteHostUrl.trim().substringBefore('/', remoteHostUrl.trim()))) ||
+                    reqUrl.startsWith("http://127.0.0.1") ||
+                    reqUrl.startsWith("http://localhost")
+                if (isAppOrigin) return false
+                if (reqUrl.startsWith("http://") || reqUrl.startsWith("https://")) {
+                    val isLikelyDownload = Regex("[?&](?:download|export|alt=media|response-content-disposition)=", RegexOption.IGNORE_CASE).containsMatchIn(reqUrl) ||
+                        Regex("\\.(?:zip|tar|gz|pdf|json|txt|md|csv|log|py|js|ts|kt|java|xml|yaml|yml|png|jpg|jpeg|webp|apk)(?:[?#]|$)", RegexOption.IGNORE_CASE).containsMatchIn(reqUrl)
+                    if (isLikelyDownload) {
+                        val guessedName = android.webkit.URLUtil.guessFileName(reqUrl, null, null)
+                        enqueueHttpDownloadToDevice(
+                            context = context,
+                            mainHandler = mainHandler,
+                            url = reqUrl,
+                            userAgent = view?.settings?.userAgentString,
+                            contentDisposition = null,
+                            mimeType = null,
+                            filenameHint = guessedName
+                        ) { fallbackUrl ->
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }
+                        }
+                        return true
+                    }
+                    runCatching {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(reqUrl)).apply {
+                            val bundle = Bundle().apply { putBinder("android.support.customtabs.extra.SESSION", null) }
+                            putExtras(bundle)
+                            putExtra("android.support.customtabs.extra.TOOLBAR_COLOR", android.graphics.Color.BLACK)
+                            if (context !is Activity) flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        context.startActivity(intent)
+                    }
+                    return true
+                }
+                return false
+            }
             override fun shouldInterceptRequest(
                 view: WebView?,
                 request: WebResourceRequest?
@@ -1083,7 +1213,9 @@ fun JetskiWebViewHost(
     androidx.compose.runtime.LaunchedEffect(webView) {
         dev.agentic.workspace.MainActivity.deepLinkFlow.collect { url ->
             if (url.isNotBlank()) {
-                dev.agentic.workspace.MainActivity.pendingDeepLink = null
+                if (!isPageLoading && decoratorActive) {
+                    dev.agentic.workspace.MainActivity.pendingDeepLink = null
+                }
                 webView.evaluateJavascript(
                     "window.__dispatchDeepLink?.(${JSONObject.quote(url)});" +
                         "window.dispatchEvent?.(new CustomEvent('antigravity:auth-changed'));",
@@ -1310,6 +1442,120 @@ fun JetskiWebViewHost(
                     }
                 }
             }
+        }
+    }
+}
+
+private fun saveBase64DownloadToDevice(
+    context: android.content.Context,
+    mainHandler: android.os.Handler,
+    base64OrDataUrl: String,
+    rawFileName: String,
+    rawMimeType: String
+) {
+    try {
+        var resolvedMime = rawMimeType.trim()
+        val pureBase64 = if (base64OrDataUrl.startsWith("data:")) {
+            val header = base64OrDataUrl.substringBefore(",")
+            if (resolvedMime.isBlank() && header.contains(":") && header.contains(";")) {
+                resolvedMime = header.substringAfter(":").substringBefore(";").trim()
+            }
+            base64OrDataUrl.substringAfter(",")
+        } else {
+            base64OrDataUrl
+        }
+        val bytes = android.util.Base64.decode(pureBase64, android.util.Base64.DEFAULT)
+        val safeName = rawFileName.trim()
+            .replace(Regex("[/\\\\:*?\"<>|]+"), "_")
+            .ifEmpty { "antigravity_download_${System.currentTimeMillis()}" }
+        val effectiveMime = resolvedMime.ifBlank { "application/octet-stream" }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, effectiveMime)
+                put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("MediaStore Downloads insert returned null")
+            resolver.openOutputStream(uri)?.use { out ->
+                out.write(bytes)
+            }
+            values.clear()
+            values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        } else {
+            @Suppress("DEPRECATION")
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
+            downloadsDir.mkdirs()
+            val outFile = File(downloadsDir, safeName)
+            outFile.writeBytes(bytes)
+        }
+
+        mainHandler.post {
+            android.widget.Toast.makeText(
+                context,
+                "Saved to Downloads: $safeName",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    } catch (e: Exception) {
+        Log.e("JetskiWebViewHost", "Failed to save downloaded file $rawFileName: ${e.message}", e)
+        mainHandler.post {
+            android.widget.Toast.makeText(
+                context,
+                "Download failed: ${e.message}",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+}
+
+private fun enqueueHttpDownloadToDevice(
+    context: android.content.Context,
+    mainHandler: android.os.Handler,
+    url: String,
+    userAgent: String?,
+    contentDisposition: String?,
+    mimeType: String?,
+    filenameHint: String,
+    onFallbackExternal: (String) -> Unit
+) {
+    try {
+        val guessed = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
+        val finalName = (if (filenameHint.isNotBlank() && !filenameHint.equals("download", ignoreCase = true)) {
+            filenameHint
+        } else {
+            guessed
+        }).replace(Regex("[/\\\\:*?\"<>|]+"), "_").ifEmpty { "download_${System.currentTimeMillis()}" }
+
+        val dm = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+        val request = android.app.DownloadManager.Request(Uri.parse(url)).apply {
+            setTitle(finalName)
+            setDescription("Downloading file via Antigravity")
+            if (!mimeType.isNullOrBlank()) setMimeType(mimeType)
+            val cookies = runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
+            if (!cookies.isNullOrBlank()) addRequestHeader("Cookie", cookies)
+            if (!userAgent.isNullOrBlank()) addRequestHeader("User-Agent", userAgent)
+            setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, finalName)
+        }
+        dm.enqueue(request)
+        mainHandler.post {
+            android.widget.Toast.makeText(
+                context,
+                "Downloading $finalName...",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    } catch (e: Exception) {
+        Log.w("JetskiWebViewHost", "DownloadManager failed for $url (${e.message}); falling back to external opener")
+        mainHandler.post {
+            onFallbackExternal(url)
         }
     }
 }

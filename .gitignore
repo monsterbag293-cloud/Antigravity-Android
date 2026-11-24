@@ -11,6 +11,11 @@ local.properties
 scratch/
 *.log
 
+# Keystores & signing credentials
+*.jks
+*.keystore
+keystore.properties
+
 # Large local caches
 .cxx/
 captures/

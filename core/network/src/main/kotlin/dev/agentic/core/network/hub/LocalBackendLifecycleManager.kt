@@ -39,7 +39,10 @@ class LocalBackendLifecycleManager(
         private const val TAG = "BackendLifecycle"
         const val DEFAULT_HTTP_PORT = 58888
         private const val DISCOVERY_TIMEOUT_MS = 20000L
+        private const val DISCOVERY_TIMEOUT_QEMU_MS = 90000L
         private const val POLL_INTERVAL_MS = 250L
+        private const val PREFS_NAME = "antigravity_backend_prefs"
+        private const val KEY_USE_QEMU_COMPAT = "use_qemu_lse_emulation"
     }
 
     sealed class LocalBackendState {
@@ -60,6 +63,39 @@ class LocalBackendLifecycleManager(
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private val _qemuModeEnabled = MutableStateFlow(
+        if (prefs.contains(KEY_USE_QEMU_COMPAT)) {
+            prefs.getBoolean(KEY_USE_QEMU_COMPAT, false)
+        } else {
+            detectLseMissingFromCpuInfo().also { detected ->
+                if (detected) {
+                    Log.i(TAG, "ARMv8.0 CPU without LSE atomics detected via /proc/cpuinfo; enabling QEMU mode by default.")
+                    prefs.edit().putBoolean(KEY_USE_QEMU_COMPAT, true).apply()
+                }
+            }
+        }
+    )
+    val qemuModeEnabled: StateFlow<Boolean> = _qemuModeEnabled.asStateFlow()
+
+    fun isQemuCompatibilityEnabled(): Boolean = _qemuModeEnabled.value
+
+    fun setQemuCompatibilityEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_USE_QEMU_COMPAT, enabled).apply()
+        _qemuModeEnabled.value = enabled
+        Log.i(TAG, "QEMU ARMv8.0 compatibility mode set to: $enabled")
+    }
+
+    private fun detectLseMissingFromCpuInfo(): Boolean {
+        return runCatching {
+            val cpuInfo = File("/proc/cpuinfo")
+            if (!cpuInfo.canRead()) return@runCatching false
+            val featuresLine = cpuInfo.readLines().firstOrNull { it.startsWith("Features") } ?: return@runCatching false
+            val tokens = featuresLine.substringAfter(':').trim().split(Regex("\\s+")).toSet()
+            tokens.contains("asimd") && !tokens.contains("atomics")
+        }.getOrDefault(false)
+    }
 
     private val _backendState = MutableStateFlow<LocalBackendState>(LocalBackendState.Stopped)
     val backendState: StateFlow<LocalBackendState> = _backendState.asStateFlow()
@@ -202,46 +238,56 @@ class LocalBackendLifecycleManager(
             val staleHubFile = File(isolatedGeminiDir, "$appDataSubdir/daemon/hub_$actualPort.json")
             if (staleHubFile.exists()) staleHubFile.delete()
 
-            val backendCmd = buildList {
-                add(prootFile.absolutePath)
-                // -0 forces root emulation so forked bash/python subcommands don't get EPERM (operation not permitted)
-                add("-0")
-                add("-r")
-                add(rootfsDir.absolutePath)
-                add("-b")
-                add("/proc")
-                add("-b")
-                add("/dev")
-                add("-b")
-                add("/sys")
-                if (externalRootDir != null) {
-                    add("-b")
-                    add("${externalRootDir.absolutePath}:/tmp/gemini_app/storage")
-                }
-                add("-w")
-                add("/tmp/gemini_app")
-                add("/usr/bin/language_server")
-                add("--standalone=true")
-                add("--persistent_mode=false")
-                add("--http_server_port=$actualPort")
-                add("--csrf_token=$csrfToken")
-                add("--gemini_dir=/tmp/gemini_app")
-                add("--app_data_dir=$appDataSubdir")
-                add("--disable_telemetry=true")
-                add("--headless=false")
-                add("--override_ide_name=antigravity")
-                add("--override_ide_version=2.32.1")
-                add("--override_user_agent_name=antigravity")
-                add("--subclient_type=hub")
-                add("--api_server_url=https://generativelanguage.googleapis.com")
-                add("--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com")
-                add("--enable_sidecars=true")
-            }
+            val qemuFile = File(nativeLibDir, "libqemu-aarch64.so").takeIf { it.exists() && it.canExecute() }
+            val initialUseQemu = isQemuCompatibilityEnabled() && qemuFile != null
 
-            Log.i(TAG, "Launching backend process: ${backendCmd.joinToString(" ")}")
-            val pb = ProcessBuilder(backendCmd)
-            pb.environment().putAll(
-                mapOf(
+            fun spawnBackend(useQemu: Boolean): Process {
+                val backendCmd = buildList {
+                    add(prootFile.absolutePath)
+                    if (useQemu && qemuFile != null) {
+                        add("-b")
+                        add(qemuFile.parentFile?.absolutePath ?: nativeLibDir)
+                    }
+                    // -0 forces root emulation so forked bash/python subcommands don't get EPERM (operation not permitted)
+                    add("-0")
+                    add("-r")
+                    add(rootfsDir.absolutePath)
+                    add("-b")
+                    add("/proc")
+                    add("-b")
+                    add("/dev")
+                    add("-b")
+                    add("/sys")
+                    if (externalRootDir != null) {
+                        add("-b")
+                        add("${externalRootDir.absolutePath}:/tmp/gemini_app/storage")
+                    }
+                    add("-w")
+                    add("/tmp/gemini_app")
+                    if (useQemu && qemuFile != null) {
+                        add(qemuFile.absolutePath)
+                    }
+                    add("/usr/bin/language_server")
+                    add("--standalone=true")
+                    add("--persistent_mode=false")
+                    add("--http_server_port=$actualPort")
+                    add("--csrf_token=$csrfToken")
+                    add("--gemini_dir=/tmp/gemini_app")
+                    add("--app_data_dir=$appDataSubdir")
+                    add("--disable_telemetry=true")
+                    add("--headless=false")
+                    add("--override_ide_name=antigravity")
+                    add("--override_ide_version=2.32.1")
+                    add("--override_user_agent_name=antigravity")
+                    add("--subclient_type=hub")
+                    add("--api_server_url=https://generativelanguage.googleapis.com")
+                    add("--cloud_code_endpoint=https://daily-cloudcode-pa.googleapis.com")
+                    add("--enable_sidecars=true")
+                }
+
+                Log.i(TAG, "Launching backend process (QEMU=$useQemu): ${backendCmd.joinToString(" ")}")
+                val pb = ProcessBuilder(backendCmd)
+                val env = mutableMapOf(
                     "HOME" to "/root",
                     "USER" to "root",
                     "PATH" to "/usr/bin:/bin:/usr/local/bin",
@@ -254,24 +300,57 @@ class LocalBackendLifecycleManager(
                     "SSL_CERT_DIR" to "/etc/ssl/certs",
                     "TMPDIR" to "/tmp"
                 )
+                if (useQemu) {
+                    env["QEMU_CPU"] = "max"
+                }
+                pb.environment().putAll(env)
+
+                synchronized(stderrHistory) { stderrHistory.setLength(0) }
+                synchronized(stdoutHistory) { stdoutHistory.setLength(0) }
+
+                val p = pb.start()
+                activeProcess = p
+                // Close stdin immediately to operate in non-blocking daemon mode
+                try { p.outputStream.close() } catch (ignored: Exception) {}
+                startStreamCapture(p)
+                return p
+            }
+
+            var proc = spawnBackend(initialUseQemu)
+            var activeTimeoutMs = if (initialUseQemu) DISCOVERY_TIMEOUT_QEMU_MS else DISCOVERY_TIMEOUT_MS
+            _backendState.value = LocalBackendState.Starting(
+                if (initialUseQemu) {
+                    "Starting via ARMv8.0 QEMU compatibility mode (may take ~40s)..."
+                } else {
+                    "Waiting for Hub daemon initialization..."
+                }
             )
+            var hubFile = waitForHubFile(isolatedGeminiDir, actualPort, proc, activeTimeoutMs)
 
-            synchronized(stderrHistory) { stderrHistory.setLength(0) }
-            synchronized(stdoutHistory) { stdoutHistory.setLength(0) }
+            // Automatic LSE/SIGILL fallback: if native startup halted due to missing ARMv8.1 LSE atomics,
+            // auto-enable QEMU compatibility mode and immediately retry without requiring manual intervention.
+            if (hubFile == null && !initialUseQemu && qemuFile != null) {
+                val errOutput = getLatestCapturedStderr()
+                val isMissingLse = errOutput.contains("lse enabled", ignoreCase = true) ||
+                    errOutput.contains("sigill-fail-fast", ignoreCase = true) ||
+                    errOutput.contains("terminated with signal 4", ignoreCase = true)
+                if (isMissingLse) {
+                    Log.w(TAG, "Hardware lacks ARMv8.1 LSE atomics; automatically enabling QEMU compatibility mode and retrying...")
+                    setQemuCompatibilityEnabled(true)
+                    stopProcessInternal()
+                    if (staleHubFile.exists()) staleHubFile.delete()
+                    _backendState.value = LocalBackendState.Starting(
+                        "Older ARMv8.0 CPU detected — switching to QEMU compatibility mode (~40s)..."
+                    )
+                    proc = spawnBackend(useQemu = true)
+                    activeTimeoutMs = DISCOVERY_TIMEOUT_QEMU_MS
+                    hubFile = waitForHubFile(isolatedGeminiDir, actualPort, proc, activeTimeoutMs)
+                }
+            }
 
-            val proc = pb.start()
-            activeProcess = proc
-
-            // Close stdin immediately to operate in non-blocking daemon mode
-            try { proc.outputStream.close() } catch (ignored: Exception) {}
-
-            // Launch output capture threads
-            startStreamCapture(proc)
-
-            // Step 2: Poll for Hub discovery file
-            _backendState.value = LocalBackendState.Starting("Waiting for Hub daemon initialization...")
-            val hubFile = waitForHubFile(isolatedGeminiDir, actualPort, proc)
-                ?: throw IOException("Backend did not produce Hub discovery file within ${DISCOVERY_TIMEOUT_MS}ms")
+            if (hubFile == null) {
+                throw IOException("Backend did not produce Hub discovery file within ${activeTimeoutMs}ms")
+            }
 
             // Step 3: Parse Hub discovery file
             val hubContent = hubFile.readText().trim()
@@ -464,9 +543,14 @@ class LocalBackendLifecycleManager(
         }
     }
 
-    private suspend fun waitForHubFile(geminiDir: File, port: Int, proc: Process): File? {
+    private suspend fun waitForHubFile(
+        geminiDir: File,
+        port: Int,
+        proc: Process,
+        timeoutMs: Long = DISCOVERY_TIMEOUT_MS
+    ): File? {
         val t0 = System.currentTimeMillis()
-        while (System.currentTimeMillis() - t0 < DISCOVERY_TIMEOUT_MS) {
+        while (System.currentTimeMillis() - t0 < timeoutMs) {
             val candidate = geminiDir.walk().firstOrNull { it.name == "hub_$port.json" && it.length() > 0 }
             if (candidate != null) return candidate
             if (!proc.isAlive) {
@@ -538,7 +622,10 @@ class LocalBackendLifecycleManager(
                 val pid = p.name.toIntOrNull() ?: continue
                 if (pid == myPid) continue
                 val cmdline = File(p, "cmdline").takeIf { it.canRead() }?.readText()?.replace('\u0000', ' ') ?: ""
-                if (cmdline.contains("language_server") || cmdline.contains("libproot.so")) {
+                if (cmdline.contains("language_server") ||
+                    cmdline.contains("libproot.so") ||
+                    cmdline.contains("libqemu-aarch64.so")
+                ) {
                     Log.i(TAG, "Cleaning up orphan process PID $pid: ${cmdline.take(60)}")
                     android.os.Process.killProcess(pid)
                 }
