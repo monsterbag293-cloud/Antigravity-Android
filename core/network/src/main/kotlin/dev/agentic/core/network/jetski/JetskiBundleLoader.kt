@@ -170,34 +170,77 @@ class JetskiBundleLoader {
             if (text.contains(browserAuxTarget)) {
                 text = text.replace(browserAuxTarget, browserAuxReplacement)
             }
-            // Use touch-friendly stacked mobile bottom sheets for wW (v2.33.0+) and aU (v2.32.1)
-            // submenus (Model -> View Usage, 3-dot -> Plugins) while preserving the full desktop UI/layout.
-            val menuMobile233Target = """function wW({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=LP(),"""
-            val menuMobile233Replacement = """function wW({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=!0,"""
-            if (text.contains(menuMobile233Target)) {
-                text = text.replace(menuMobile233Target, menuMobile233Replacement)
-            }
-
-            // Use touch-friendly stacked mobile bottom sheets for aU submenus (3-dot -> Extensions,
-            // Projects -> This Device) while preserving the full V4 zi.Electron desktop UI/sidebar.
-            val menuMobileTarget = """function aU({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=HG(),"""
-            val menuMobileReplacement = """function aU({children:a,open:b,onOpenChange:c,ownsHighlight:d=!1,onHighlightExit:f,searchQuery:g,onSearchQueryChange:h}){var k=!0,"""
-            if (text.contains(menuMobileTarget)) {
-                text = text.replace(menuMobileTarget, menuMobileReplacement)
+            // Use touch-friendly stacked mobile bottom sheets for submenus (Model -> View Usage,
+            // 3-dot -> Plugins, Projects -> This Device) across Antigravity versions while
+            // preserving the full desktop UI/layout. Use indexOf + bounded slices so we never
+            // run a regex across the full multi-MB main.js bundle.
+            var menuMobileMatched = false
+            val menuSliceRegex = Regex("""(\)\{(?:var|let|const)\s+[A-Za-z0-9_${'$'}]+=)[A-Za-z0-9_${'$'}]+\(\),""")
+            run {
+                val anchor = "onHighlightExit:"
+                var pos = text.indexOf(anchor)
+                while (pos >= 0) {
+                    val end = minOf(text.length, pos + 140)
+                    val slice = text.substring(pos, end)
+                    val m = menuSliceRegex.find(slice)
+                    if (m != null) {
+                        text = text.substring(0, pos + m.range.first) +
+                            "${m.groupValues[1]}!0," +
+                            text.substring(pos + m.range.last + 1)
+                        menuMobileMatched = true
+                        break
+                    }
+                    pos = text.indexOf(anchor, pos + anchor.length)
+                }
             }
             // Keep original desktop model menu chevrons independently tappable as fallback
             // while making the model thinking-level chevron always visible and independently tappable.
-            // 2.32.1 targets
-            val trigger2321Target = """B.createElement(qZa,{disabled:d,onPointerDown:q=>{k.current=q.pointerType==="touch"},onPointerCancel:()=>{k.current=!1},onKeyDown:()=>{k.current=!1},onClick:q=>{q.stopPropagation();q=k.current;k.current=!1;q||c?.()},"""
-            val trigger2321Replacement = """B.createElement(qZa,{disabled:d,onPointerDown:q=>{k.current=q.pointerType==="touch"},onPointerCancel:()=>{k.current=!1},onKeyDown:()=>{k.current=!1},onClick:q=>{q.stopPropagation();k.current=!1;if(q.target?.closest?.("[data-agy-submenu-arrow]")){q.preventDefault();return}c?.(q)},"""
-            if (text.contains(trigger2321Target)) {
-                text = text.replace(trigger2321Target, trigger2321Replacement)
+            var triggerMatched = false
+            val triggerSliceRegex = Regex(
+                """([A-Za-z0-9_${'$'}]+\.createElement\([A-Za-z0-9_${'$'}]+,\{disabled:[A-Za-z0-9_${'$'}]+,onPointerDown:([A-Za-z0-9_${'$'}]+)=>\{([A-Za-z0-9_${'$'}]+)\.current=\2\.pointerType==="touch"\},onPointerCancel:\(\)=>\{\3\.current=!1\},onKeyDown:\(\)=>\{\3\.current=!1\},)onClick:\2=>\{\2\.stopPropagation\(\);\2=\3\.current;\3\.current=!1;\2\|\|([A-Za-z0-9_${'$'}]+)\?\.\(\)\},"""
+            )
+            run {
+                val anchor = """pointerType==="touch""""
+                var pos = text.indexOf(anchor)
+                while (pos >= 0) {
+                    val start = maxOf(0, pos - 90)
+                    val end = minOf(text.length, pos + 220)
+                    val slice = text.substring(start, end)
+                    val m = triggerSliceRegex.find(slice)
+                    if (m != null) {
+                        val rep = """${m.groupValues[1]}onClick:${m.groupValues[2]}=>{${m.groupValues[2]}.stopPropagation();${m.groupValues[3]}.current=!1;if(${m.groupValues[2]}.target?.closest?.("[data-agy-submenu-arrow]")){${m.groupValues[2]}.preventDefault();return}${m.groupValues[4]}?.(${m.groupValues[2]})},"""
+                        text = text.substring(0, start + m.range.first) + rep + text.substring(start + m.range.last + 1)
+                        triggerMatched = true
+                        break
+                    }
+                    pos = text.indexOf(anchor, pos + anchor.length)
+                }
             }
-            val chevron2321Target = """B.createElement("span",{className:Gi("flex shrink-0 pl-1 opacity-50",f&&Gi("can-hover:hidden can-hover:group-hover:flex can-hover:group-data-[highlighted]:flex",!m&&"can-hover:group-focus:flex"))},B.createElement(nq,{name:"chevron_right",size:14}))"""
-            val chevron2321Replacement = """B.createElement("span",{"data-agy-submenu-arrow":"1",className:"flex shrink-0 items-center justify-center pl-2 pr-1 py-0.5 -mr-1 rounded opacity-70 hover:opacity-100"},B.createElement(nq,{name:"chevron_right",size:14}))"""
-            if (text.contains(chevron2321Target)) {
-                text = text.replace(chevron2321Target, chevron2321Replacement)
+            var chevronMatched = false
+            val chevronSliceRegex = Regex(
+                """([A-Za-z0-9_${'$'}]+\.createElement\()"span",\{className:[A-Za-z0-9_${'$'}]+\("flex shrink-0 pl-1 opacity-50",[A-Za-z0-9_${'$'}]+&&[A-Za-z0-9_${'$'}]+\("can-hover:hidden can-hover:group-hover:flex can-hover:group-data-\[highlighted\]:flex",![A-Za-z0-9_${'$'}]+&&"can-hover:group-focus:flex"\)\)\},(\1\([A-Za-z0-9_${'$'}]+,\{name:"chevron_right",size:14\}\)\))"""
+            )
+            run {
+                val anchor = """can-hover:hidden can-hover:group-hover:flex can-hover:group-data-[highlighted]:flex"""
+                var pos = text.indexOf(anchor)
+                while (pos >= 0) {
+                    val start = maxOf(0, pos - 120)
+                    val end = minOf(text.length, pos + 160)
+                    val slice = text.substring(start, end)
+                    val m = chevronSliceRegex.find(slice)
+                    if (m != null) {
+                        val rep = """${m.groupValues[1]}"span",{"data-agy-submenu-arrow":"1",className:"flex shrink-0 items-center justify-center pl-2 pr-1 py-0.5 -mr-1 rounded opacity-70 hover:opacity-100"},${m.groupValues[2]}"""
+                        text = text.substring(0, start + m.range.first) + rep + text.substring(start + m.range.last + 1)
+                        chevronMatched = true
+                        break
+                    }
+                    pos = text.indexOf(anchor, pos + anchor.length)
+                }
             }
+            android.util.Log.i(
+                "JetskiBundleLoader",
+                "patchMainJsForMobile: menuMobile=$menuMobileMatched trigger=$triggerMatched chevron=$chevronMatched"
+            )
             // 2.29.1 fallback targets
             val submenuTriggerTarget = """A.createElement(DRa,{disabled:d,onClick:p=>{p.stopPropagation();c?.(p)},"""
             val submenuTriggerReplacement = """A.createElement(DRa,{disabled:d,onClick:p=>{p.stopPropagation();if(p.target?.closest?.("[data-agy-submenu-arrow]")){p.preventDefault();return}c?.(p)},"""

@@ -2,8 +2,8 @@
 
 **Version:** `1.1.0` (`versionCode = 2`)  
 **Release Artifact:** `antigravity-v1.1.0-release.apk`  
-**Size:** `43,539,316` bytes (~41.52 MB)  
-**SHA-256:** `c8c79802326ca116cd59f32d821c0c5b22d8866d260a0f87392ce9820a8cd6bb`  
+**Size:** `43,539,500` bytes (~41.52 MB)  
+**SHA-256:** `3b734fcd2dee389fb7d144b1d39ec3491be788ecb298a4a40f7c7e35b02b2cdf`  
 
 ---
 
