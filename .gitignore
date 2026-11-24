@@ -28,3 +28,4 @@ jetski-web.zip
 language_server
 language_server-*
 language_server.exe
+__pycache__/
